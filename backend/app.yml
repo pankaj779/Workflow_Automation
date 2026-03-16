@@ -1,0 +1,22 @@
+command:
+  - bash
+  - -c
+  - |
+      uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+
+python:
+  requirements_file: backend/requirements.txt
+
+env:
+  - name: DB_HOST
+    value: "dbc-773a2938-c150.cloud.databricks.com"
+  - name: DB_HTTP_PATH
+    value: "/sql/1.0/warehouses/b5629c3b92806875"
+  - name: DB_TOKEN
+    value: "dapi3bb115f9a619abb31e47164eddb3639e"
+
+resources:
+  cpu: 1
+  memory: 2Gi
+
+port: 8000

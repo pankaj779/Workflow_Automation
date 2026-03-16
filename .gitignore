@@ -1,0 +1,24 @@
+# =========================
+# Node / React
+# =========================
+node_modules/
+
+# =========================
+# Python / FastAPI
+# =========================
+backend/venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# =========================
+# OpenAPI generated client
+# =========================
+src/api-client/core/OpenAPI.ts
+
+# =========================
+# Environment & secrets
+# =========================
+.env
+.env.*
