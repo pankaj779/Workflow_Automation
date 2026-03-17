@@ -16,8 +16,17 @@ import {
   X,
   Loader2,
   AlertCircle,
+  AlertTriangle,
+  Send,
+  MoreVertical,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface AdminStats {
   total_kpis: number;
@@ -26,6 +35,7 @@ interface AdminStats {
   deleted_kpis: number;
   pending_approvals: number;
   awaiting_owner_decision: number;
+  owner_no_response: number;
 }
 
 interface PendingDecision {
@@ -37,23 +47,36 @@ interface PendingDecision {
   requested_at: string | null;
 }
 
+interface NoOwnerResponseDecision {
+  decision_id: string;
+  kpi_id: string;
+  kpi_name: string;
+  requested_by: string;
+  requested_at: string | null;
+}
+
 export default function AdminPage() {
   const navigate = useNavigate();
   const { user, isLoading: userLoading } = useUser();
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [decisions, setDecisions] = useState<PendingDecision[]>([]);
+  const [noResponseDecisions, setNoResponseDecisions] = useState<NoOwnerResponseDecision[]>([]);
   const [loading, setLoading] = useState(true);
   const [runningCold, setRunningCold] = useState(false);
   const [approving, setApproving] = useState<string | null>(null);
+  const [warningDecisionId, setWarningDecisionId] = useState<string | null>(null);
+  const [actingDecisionId, setActingDecisionId] = useState<string | null>(null);
 
   const loadAdminData = async () => {
     try {
-      const [statsRes, approvalsRes] = await Promise.all([
+      const [statsRes, approvalsRes, noResponseRes] = await Promise.all([
         apiCall<AdminStats>("getAdminStats"),
         apiCall<{ decisions: PendingDecision[] }>("getAdminPendingApprovals"),
+        apiCall<{ decisions: NoOwnerResponseDecision[] }>("getAdminNoOwnerResponse"),
       ]);
       setStats(statsRes || null);
       setDecisions((approvalsRes?.decisions || []) as PendingDecision[]);
+      setNoResponseDecisions((noResponseRes?.decisions || []) as NoOwnerResponseDecision[]);
     } catch (e) {
       if ((e as any)?.message?.includes("403") || (e as Error)?.message?.includes("403")) {
         toast.error("Admin access required");
@@ -61,6 +84,7 @@ export default function AdminPage() {
       }
       setStats(null);
       setDecisions([]);
+      setNoResponseDecisions([]);
     } finally {
       setLoading(false);
     }
@@ -120,6 +144,34 @@ export default function AdminPage() {
     }
   };
 
+  const handleWarnOwner = async (decisionId: string) => {
+    try {
+      setWarningDecisionId(decisionId);
+      await apiCall("adminWarnOwner", { body: { decision_id: decisionId } });
+      toast.success("Warning sent to owner");
+      await loadAdminData();
+    } catch (e) {
+      toast.error("Failed to send warning");
+      console.error(e);
+    } finally {
+      setWarningDecisionId(null);
+    }
+  };
+
+  const handleAdminAction = async (decisionId: string, action: "delete" | "move_back" | "keep_cold") => {
+    try {
+      setActingDecisionId(decisionId);
+      await apiCall("adminAction", { body: { decision_id: decisionId, action } });
+      toast.success(`Action "${action.replace("_", " ")}" applied`);
+      await loadAdminData();
+    } catch (e) {
+      toast.error("Action failed");
+      console.error(e);
+    } finally {
+      setActingDecisionId(null);
+    }
+  };
+
   if (userLoading || !user?.isAdmin) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -163,7 +215,7 @@ export default function AdminPage() {
 
       <main className="container mx-auto px-4 py-8 space-y-6">
         {/* Stats Row */}
-        <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-7">
           <Card className="border-border/60">
             <CardContent className="p-4 flex items-center gap-3">
               <div className="p-2 rounded-lg bg-primary/10">
@@ -232,6 +284,19 @@ export default function AdminPage() {
               </div>
             </CardContent>
           </Card>
+          <Card className="border-border/60">
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-red-500/10">
+                <AlertTriangle className="h-4 w-4 text-red-500" />
+              </div>
+              <div>
+                <p className="text-[11px] text-muted-foreground">Owner No Response</p>
+                <p className="text-xl font-bold text-foreground">
+                  {stats?.owner_no_response ?? 0}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
         {/* Run Cold Storage */}
@@ -256,6 +321,95 @@ export default function AdminPage() {
               )}
               {runningCold ? "Running..." : "Run Now (Manual)"}
             </Button>
+          </CardContent>
+        </Card>
+
+        {/* Owner No Response */}
+        <Card className="border-border/60 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-base">Owner No Response</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Owner did not respond within the timeout. Send a warning or take action yourself.
+            </p>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : noResponseDecisions.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">
+                No decisions awaiting owner response past timeout.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {noResponseDecisions.map((d) => (
+                  <div
+                    key={d.decision_id}
+                    className="flex items-center justify-between gap-4 p-4 rounded-lg border border-border bg-card"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-medium text-sm truncate">{d.kpi_name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        KPI: {d.kpi_id} • Owner: {d.requested_by}
+                      </p>
+                      {d.requested_at && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Requested: {new Date(d.requested_at).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1"
+                        onClick={() => handleWarnOwner(d.decision_id)}
+                        disabled={warningDecisionId === d.decision_id}
+                      >
+                        {warningDecisionId === d.decision_id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Send className="h-3.5 w-3.5" />
+                        )}
+                        Send Warning
+                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            size="sm"
+                            variant="default"
+                            className="gap-1"
+                            disabled={actingDecisionId === d.decision_id}
+                          >
+                            {actingDecisionId === d.decision_id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <MoreVertical className="h-3.5 w-3.5" />
+                            )}
+                            Take Action
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => handleAdminAction(d.decision_id, "move_back")}>
+                            Move back to active
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleAdminAction(d.decision_id, "keep_cold")}>
+                            Keep in cold
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => handleAdminAction(d.decision_id, "delete")}
+                            className="text-destructive focus:text-destructive"
+                          >
+                            Delete KPI
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
 

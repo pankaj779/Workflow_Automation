@@ -57,6 +57,9 @@ export interface APIConfig {
     // Admin (RBAC)
     getAdminStats: APIEndpoint;
     getAdminPendingApprovals: APIEndpoint;
+    getAdminNoOwnerResponse: APIEndpoint;
+    adminWarnOwner: APIEndpoint;
+    adminAction: APIEndpoint;
   };
 }
 
@@ -187,6 +190,21 @@ const configs: Record<string, APIConfig> = {
         method: 'GET',
         description: 'Pending cold storage approvals',
       },
+      getAdminNoOwnerResponse: {
+        url: '/admin/no-owner-response',
+        method: 'GET',
+        description: 'Decisions where owner did not respond within timeout',
+      },
+      adminWarnOwner: {
+        url: '/cold-storage/admin-warn-owner',
+        method: 'POST',
+        description: 'Admin sends warning to KPI owner',
+      },
+      adminAction: {
+        url: '/cold-storage/admin-action',
+        method: 'POST',
+        description: 'Admin takes direct action on cold storage decision',
+      },
     },
   },
   production: {
@@ -230,6 +248,9 @@ const configs: Record<string, APIConfig> = {
       deleteNotification: { url: '/notifications/:notificationId', method: 'DELETE', description: 'Delete a notification' },
       getAdminStats: { url: '/admin/stats', method: 'GET', description: 'Admin dashboard stats' },
       getAdminPendingApprovals: { url: '/admin/pending-approvals', method: 'GET', description: 'Pending cold storage approvals' },
+      getAdminNoOwnerResponse: { url: '/admin/no-owner-response', method: 'GET', description: 'Owner no response decisions' },
+      adminWarnOwner: { url: '/cold-storage/admin-warn-owner', method: 'POST', description: 'Admin warns owner' },
+      adminAction: { url: '/cold-storage/admin-action', method: 'POST', description: 'Admin takes action' },
     },
   },
 };

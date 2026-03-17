@@ -174,6 +174,8 @@ COLD_STORAGE_DECISION_DAYS = _env_int("COLD_STORAGE_DECISION_DAYS", 2)
 COLD_STORAGE_INACTIVE_MINUTES = _env_int("COLD_STORAGE_INACTIVE_MINUTES", 10)
 COLD_STORAGE_DECISION_MINUTES = _env_int("COLD_STORAGE_DECISION_MINUTES", 5)
 COLD_STORAGE_REMINDER_MINUTES = _env_int("COLD_STORAGE_REMINDER_MINUTES", 1)
+COLD_STORAGE_OWNER_RESPONSE_DAYS = _env_int("COLD_STORAGE_OWNER_RESPONSE_DAYS", 3)
+COLD_STORAGE_OWNER_RESPONSE_MINUTES = _env_int("COLD_STORAGE_OWNER_RESPONSE_MINUTES", 0)  # 0 = use days
 
 _cold_storage_scheduler_started = False
 
@@ -558,6 +560,8 @@ class ColdStorageRunConfig(BaseModel):
     inactive_minutes_to_cold: Optional[int] = None
     cold_minutes_to_decision: Optional[int] = None
     reminder_minutes_interval: Optional[int] = None
+    owner_response_days: Optional[int] = None
+    owner_response_minutes: Optional[int] = None
 
 
 class OwnerDecisionRequest(BaseModel):
@@ -570,6 +574,15 @@ class ApprovalRequest(BaseModel):
     decision_id: str
     approver_id: Optional[str] = None  # Optional; backend uses current user from Request when not provided
     approve: bool
+
+
+class AdminWarnOwnerRequest(BaseModel):
+    decision_id: str
+
+
+class AdminActionRequest(BaseModel):
+    decision_id: str
+    action: str  # delete | move_back | keep_cold
 
 # ==============================
 # Helper DB Functions
@@ -2301,6 +2314,13 @@ def _run_cold_storage_core(config: ColdStorageRunConfig, run_source: str = "manu
         if config.reminder_minutes_interval and int(config.reminder_minutes_interval) > 0
         else 21600
     )
+    owner_response_days = config.owner_response_days if config.owner_response_days is not None else COLD_STORAGE_OWNER_RESPONSE_DAYS
+    owner_response_minutes = config.owner_response_minutes if config.owner_response_minutes is not None else COLD_STORAGE_OWNER_RESPONSE_MINUTES
+    owner_response_cutoff_expr = (
+        f"from_unixtime(unix_timestamp() - {int(owner_response_minutes) * 60})"
+        if owner_response_minutes and int(owner_response_minutes) > 0
+        else f"date_sub(current_timestamp(), {owner_response_days})"
+    )
 
     # #region agent log
     _agent_dbg(
@@ -2434,6 +2454,44 @@ def _run_cold_storage_core(config: ColdStorageRunConfig, run_source: str = "manu
         except Exception:
             pass
 
+    # 4) Notify admins when owner has not responded within owner_response window
+    no_response_sql = f"""
+        SELECT d.decision_id, d.kpi_id, d.requested_by
+        FROM {table("cold_storage_decisions")} d
+        JOIN {table("kpi_master")} k ON k.kpi_id = d.kpi_id
+        WHERE d.status = 'open'
+          AND (d.owner_choice IS NULL OR d.owner_choice = '')
+          AND d.requested_at < {owner_response_cutoff_expr}
+          AND k.is_deleted = false AND k.storage_status = 'cold'
+    """
+    try:
+        no_response_rows = fetch_all(no_response_sql)
+    except Exception:
+        no_response_rows = []
+    admin_notified_count = 0
+    for r in no_response_rows:
+        decision_id = r["decision_id"]
+        # Avoid duplicate admin notifications
+        existing = fetch_all(
+            f"""
+            SELECT 1 FROM {table("notifications")}
+            WHERE type = 'owner_no_response' AND related_id = ?
+            LIMIT 1
+            """,
+            (decision_id,),
+        )
+        if existing:
+            continue
+        owner_email = (r.get("requested_by") or "owner").strip()
+        kpi_id = r["kpi_id"]
+        title = f"Owner did not respond: KPI {kpi_id}"
+        body = (
+            f"KPI Owner ({owner_email}) did not respond to the cold storage decision for KPI {kpi_id}. "
+            "You can send a warning to the owner or take action yourself (Delete, Move back, Keep in cold) from the Admin dashboard."
+        )
+        _notify_admins("owner_no_response", title, body, related_kpi_id=kpi_id, related_id=decision_id)
+        admin_notified_count += 1
+
     # #region agent log
     _agent_dbg(
         "main.py:run_cold_storage:result",
@@ -2442,6 +2500,7 @@ def _run_cold_storage_core(config: ColdStorageRunConfig, run_source: str = "manu
             "moved_to_cold": len(to_cold),
             "pending_decisions_created": len(needing_decision),
             "reminders_sent": reminder_count,
+            "admin_notified_no_response": admin_notified_count,
             "mode": "minutes" if config.inactive_minutes_to_cold or config.cold_minutes_to_decision else "days",
         },
         run_id="post-fix",
@@ -2452,6 +2511,7 @@ def _run_cold_storage_core(config: ColdStorageRunConfig, run_source: str = "manu
         "moved_to_cold": len(to_cold),
         "pending_decisions_created": len(needing_decision),
         "reminders_sent": reminder_count,
+        "admin_notified_no_response": admin_notified_count,
     }
 
 
@@ -2463,6 +2523,8 @@ def _build_auto_cold_storage_config() -> ColdStorageRunConfig:
         inactive_minutes_to_cold=COLD_STORAGE_INACTIVE_MINUTES,
         cold_minutes_to_decision=COLD_STORAGE_DECISION_MINUTES,
         reminder_minutes_interval=COLD_STORAGE_REMINDER_MINUTES,
+        owner_response_days=COLD_STORAGE_OWNER_RESPONSE_DAYS,
+        owner_response_minutes=COLD_STORAGE_OWNER_RESPONSE_MINUTES if COLD_STORAGE_OWNER_RESPONSE_MINUTES > 0 else None,
     )
 
 
@@ -2667,6 +2729,93 @@ def approve_cold_storage(req: ApprovalRequest, request: Request):
     return {"message": f"Decision {decision_str}", "applied": bool(req.approve)}
 
 
+@app.post("/cold-storage/admin-warn-owner")
+def admin_warn_owner(req: AdminWarnOwnerRequest, request: Request):
+    """Admin sends a warning notification to the KPI owner to take action."""
+    current_user = _get_current_user_email(request)
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+    rows = fetch_all(
+        f"""
+        SELECT * FROM {table("cold_storage_decisions")}
+        WHERE decision_id = ? AND status = 'open'
+        """,
+        (req.decision_id,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Decision not found or already closed")
+    decision = rows[0]
+    owner_id = (decision.get("requested_by") or "owner").strip()
+    kpi_id = decision["kpi_id"]
+
+    title = "Admin warning: Action required for KPI in cold storage"
+    body = (
+        f"An admin has requested you to take action on KPI {kpi_id} in cold storage. "
+        "Please choose: Delete, Move back, or Keep in cold from the Cold Storage page."
+    )
+    _insert_notification(
+        owner_id, "owner", "admin_warning", title, body,
+        related_kpi_id=kpi_id, related_id=req.decision_id,
+    )
+    return {"message": "Warning sent to owner"}
+
+
+@app.post("/cold-storage/admin-action")
+def admin_action(req: AdminActionRequest, request: Request):
+    """Admin takes direct action on a cold storage decision (when owner has not responded)."""
+    current_user = _get_current_user_email(request)
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin role required")
+    if req.action not in ("delete", "move_back", "keep_cold"):
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    rows = fetch_all(
+        f"""
+        SELECT * FROM {table("cold_storage_decisions")}
+        WHERE decision_id = ? AND status = 'open'
+        """,
+        (req.decision_id,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Decision not found or already closed")
+    decision = rows[0]
+    kpi_id = decision["kpi_id"]
+    owner_id = (decision.get("requested_by") or "owner").strip()
+
+    execute(
+        f"""
+        UPDATE {table("cold_storage_decisions")}
+        SET owner_choice = ?, approver_decision = 'approved', decided_by = ?, decided_at = current_timestamp(), status = 'closed'
+        WHERE decision_id = ?
+        """,
+        (req.action, current_user, req.decision_id),
+    )
+
+    if req.action == "delete":
+        execute(
+            f"UPDATE {table('kpi_master')} SET is_deleted = true WHERE kpi_id = ?",
+            (kpi_id,),
+        )
+    elif req.action == "move_back":
+        execute(
+            f"""
+            UPDATE {table("kpi_master")}
+            SET storage_status = 'active', status = 'Active', moved_to_cold_at = NULL
+            WHERE kpi_id = ?
+            """,
+            (kpi_id,),
+        )
+
+    title = f"Admin took action on KPI {kpi_id}"
+    body = f"An admin applied '{req.action}' to your KPI {kpi_id} in cold storage (owner had not responded)."
+    _insert_notification(
+        owner_id, "owner", "admin_action", title, body,
+        related_kpi_id=kpi_id, related_id=req.decision_id,
+    )
+    return {"message": f"Action '{req.action}' applied", "kpi_id": kpi_id}
+
+
 # ==============================
 # Admin API (RBAC: admin only)
 # ==============================
@@ -2722,6 +2871,22 @@ def admin_stats(request: Request):
         )
         awaiting_owner_count = awaiting_owner[0].get("c", 0) if awaiting_owner else 0
 
+        owner_resp_cutoff = (
+            f"from_unixtime(unix_timestamp() - {COLD_STORAGE_OWNER_RESPONSE_MINUTES * 60})"
+            if COLD_STORAGE_OWNER_RESPONSE_MINUTES and COLD_STORAGE_OWNER_RESPONSE_MINUTES > 0
+            else f"date_sub(current_timestamp(), {COLD_STORAGE_OWNER_RESPONSE_DAYS})"
+        )
+        no_response = fetch_all(
+            f"""
+            SELECT COUNT(*) AS c FROM {table("cold_storage_decisions")} d
+            JOIN {table("kpi_master")} k ON k.kpi_id = d.kpi_id
+            WHERE d.status = 'open' AND (d.owner_choice IS NULL OR d.owner_choice = '')
+              AND d.requested_at < {owner_resp_cutoff}
+              AND k.is_deleted = false AND k.storage_status = 'cold'
+            """
+        )
+        owner_no_response_count = no_response[0].get("c", 0) if no_response else 0
+
         return {
             "total_kpis": total_kpis,
             "active_kpis": active_kpis,
@@ -2729,6 +2894,7 @@ def admin_stats(request: Request):
             "deleted_kpis": deleted_kpis,
             "pending_approvals": pending_approvals,
             "awaiting_owner_decision": awaiting_owner_count,
+            "owner_no_response": owner_no_response_count,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2762,6 +2928,50 @@ def admin_pending_approvals(request: Request):
                 "kpi_id": r["kpi_id"],
                 "kpi_name": kpi_name,
                 "owner_choice": r.get("owner_choice"),
+                "requested_by": r.get("requested_by"),
+                "requested_at": str(r.get("requested_at")) if r.get("requested_at") else None,
+            })
+        return {"decisions": decisions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/no-owner-response")
+def admin_no_owner_response(request: Request):
+    """List cold storage decisions where owner has not responded within the timeout window."""
+    current_user = _get_current_user_email(request)
+    if ADMIN_EMAILS and not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+    owner_resp_cutoff = (
+        f"from_unixtime(unix_timestamp() - {COLD_STORAGE_OWNER_RESPONSE_MINUTES * 60})"
+        if COLD_STORAGE_OWNER_RESPONSE_MINUTES and COLD_STORAGE_OWNER_RESPONSE_MINUTES > 0
+        else f"date_sub(current_timestamp(), {COLD_STORAGE_OWNER_RESPONSE_DAYS})"
+    )
+    try:
+        rows = fetch_all(
+            f"""
+            SELECT d.decision_id, d.kpi_id, d.requested_by, d.requested_at
+            FROM {table("cold_storage_decisions")} d
+            JOIN {table("kpi_master")} k ON k.kpi_id = d.kpi_id
+            WHERE d.status = 'open'
+              AND (d.owner_choice IS NULL OR d.owner_choice = '')
+              AND d.requested_at < {owner_resp_cutoff}
+              AND k.is_deleted = false AND k.storage_status = 'cold'
+            ORDER BY d.requested_at ASC
+            """
+        )
+        decisions = []
+        for r in rows:
+            kpi_rows = fetch_all(
+                f"SELECT kpi_name, owner_team FROM {table('kpi_master')} WHERE kpi_id = ?",
+                (r["kpi_id"],),
+            )
+            kpi_name = kpi_rows[0].get("kpi_name", r["kpi_id"]) if kpi_rows else r["kpi_id"]
+            decisions.append({
+                "decision_id": r["decision_id"],
+                "kpi_id": r["kpi_id"],
+                "kpi_name": kpi_name,
                 "requested_by": r.get("requested_by"),
                 "requested_at": str(r.get("requested_at")) if r.get("requested_at") else None,
             })
