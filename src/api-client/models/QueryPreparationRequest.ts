@@ -6,5 +6,6 @@ export type QueryPreparationRequest = {
     sql: string;
     source_table?: (string | null);
     columns?: Array<string>;
+    prompt?: string;
 };
 

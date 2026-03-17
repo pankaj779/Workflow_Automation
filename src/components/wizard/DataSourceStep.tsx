@@ -561,6 +561,7 @@ export function DataSourceStep({
                         onCheckedChange={(checked) => {
                           toggleTable(table.id);
                           if (checked) {
+                            onTableSelect(table.id);
                             void handleTablePreview(table, false);
                           }
                         }}
@@ -712,13 +713,13 @@ export function DataSourceStep({
           <div className="space-y-3">
             {selectedColumns.map((selection) => (
               <div key={selection.tableId} className="space-y-1.5">
-                <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                <div className="text-xs font-medium text-muted-foreground flex items-center gap-1">
                   <Database className="h-3 w-3" />
                   {selection.tableName}
                   <Badge variant="outline" className="ml-1 text-xs">
                     {selection.columns.length}
                   </Badge>
-                </p>
+                </div>
                 <div className="flex flex-wrap gap-1.5">
                   {selection.columns.map((col) => (
                     <Badge 

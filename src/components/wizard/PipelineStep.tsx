@@ -30,6 +30,7 @@ interface PipelineStepProps {
   sql: string;
   table: string;
   columns: string[];
+  semanticPrompt?: string | null;
   kpiName?: string;
   description?: string;
   category?: string;
@@ -51,6 +52,7 @@ export function PipelineStep({
   sql,
   table,
   columns,
+  semanticPrompt,
   onComplete,
   onBack,
   metadata
@@ -66,6 +68,7 @@ export function PipelineStep({
     semantic: null
   });
   const [isDuplicate, setIsDuplicate] = useState(false);
+  const [duplicateInfo, setDuplicateInfo] = useState<{ matchedType?: string; matchedSignature?: string; existingKpis?: string[] } | null>(null);
   const [dataQualityChecks, setDataQualityChecks] = useState<DataQualityCheck[]>(mockDataQualityChecks);
   const [insertResults, setInsertResults] = useState<{ validation: number; facts: number } | null>(null);
 
@@ -91,16 +94,23 @@ export function PipelineStep({
 
     try {
       setPhase1Status("running");
+      setDuplicateInfo(null);
 
       const res = await DefaultService.queryPreparationKpiQueryPreparationPost({
         sql,
         source_table: table,
         columns,
+        prompt: semanticPrompt ?? undefined,
       });
 
       // 🔴 Handle duplicate FIRST
       if (res?.duplicate) {
         setIsDuplicate(true);
+        setDuplicateInfo({
+          matchedType: res?.matched_signature_type,
+          matchedSignature: res?.matched_signature,
+          existingKpis: (res?.existing_kpis ?? []).map((k: { kpi_name?: string }) => k.kpi_name).filter(Boolean),
+        });
         setPhase1Status("failed"); // ← mark phase as failed
         return; // stop further execution
       }
@@ -112,6 +122,7 @@ export function PipelineStep({
         lineage: res?.lineage_signature ?? null,
       });
 
+      setDuplicateInfo(null);
       setPhase1Status("complete");
 
     } catch (err) {
@@ -444,11 +455,28 @@ export function PipelineStep({
 
         {/* FAILED / ERROR MESSAGE */}
         {(phase1Status === "failed" || phase1Status === "error") && (
-          <div className="p-4 bg-destructive/10 rounded-lg flex items-center gap-3">
-            <XCircle className="h-5 w-5 text-destructive" />
-            <span className="text-sm font-medium text-destructive">
-              {phase1Status === "failed" ? "Duplicate KPI found — a KPI with the same signature already exists" : "Query preparation failed — please check the backend logs"}
-            </span>
+          <div className="p-4 bg-destructive/10 rounded-lg space-y-3">
+            <div className="flex items-center gap-3">
+              <XCircle className="h-5 w-5 shrink-0 text-destructive" />
+              <span className="text-sm font-medium text-destructive">
+                {phase1Status === "failed" ? "Duplicate KPI found — a KPI with the same signature already exists" : "Query preparation failed — please check the backend logs"}
+              </span>
+            </div>
+            {phase1Status === "failed" && duplicateInfo && (
+              <div className="ml-8 space-y-1 text-xs">
+                {duplicateInfo.matchedType && duplicateInfo.matchedSignature && (
+                  <p className="text-muted-foreground">
+                    <span className="font-medium text-foreground">Matched {duplicateInfo.matchedType} signature:</span>{" "}
+                    <code className="px-1.5 py-0.5 rounded bg-muted font-mono break-all">{duplicateInfo.matchedSignature}</code>
+                  </p>
+                )}
+                {duplicateInfo.existingKpis && duplicateInfo.existingKpis.length > 0 && (
+                  <p className="text-muted-foreground">
+                    <span className="font-medium text-foreground">Existing KPI(s):</span> {duplicateInfo.existingKpis.join(", ")}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
 

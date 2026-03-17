@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import { useUser } from "@/hooks/useUser";
 import { apiCall } from "@/lib/api-config";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,12 +28,14 @@ interface Report {
 
 export default function ReportsPage() {
   const navigate = useNavigate();
+  const { user } = useUser();
   const [kpis, setKpis] = useState<KPI[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
   const [selectedKpiIds, setSelectedKpiIds] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [deletingReportId, setDeletingReportId] = useState<string | null>(null);
   const [searchKpi, setSearchKpi] = useState("");
 
   const loadData = async () => {
@@ -75,7 +78,7 @@ export default function ReportsPage() {
           report_name: name.trim(),
           description: description.trim() || null,
           kpi_ids: selectedKpiIds,
-          created_by: "admin",
+          created_by: user?.email || "unknown",
         },
       });
       toast.success("Report created successfully");
@@ -88,6 +91,31 @@ export default function ReportsPage() {
       console.error(e);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleDeleteReport = async (reportId: string, event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    // #region agent log
+    fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H9',location:'Reports.tsx:handleDeleteReport',message:'delete report clicked',data:{reportId},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    try {
+      setDeletingReportId(reportId);
+      await apiCall("deleteReport", {
+        params: { reportId },
+      });
+      // #region agent log
+      fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H10',location:'Reports.tsx:handleDeleteReport',message:'delete report api success',data:{reportId},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      toast.success("Report deleted");
+      await loadData();
+    } catch (e) {
+      // #region agent log
+      fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H10',location:'Reports.tsx:handleDeleteReport',message:'delete report api failed',data:{reportId,error:e instanceof Error ? e.message : 'unknown'},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      toast.error("Failed to delete report");
+    } finally {
+      setDeletingReportId(null);
     }
   };
 
@@ -230,7 +258,8 @@ export default function ReportsPage() {
                 {reports.map(report => (
                   <Card
                     key={report.report_id}
-                    className="border-border/60 hover:border-primary/40 transition-all hover:shadow-md"
+                    className="border-border/60 hover:border-primary/40 transition-all hover:shadow-md cursor-pointer"
+                    onClick={() => navigate(`/reports/${report.report_id}`)}
                   >
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between gap-3">
@@ -244,11 +273,27 @@ export default function ReportsPage() {
                             </p>
                           )}
                         </div>
-                        {report.created_at && (
-                          <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-                            {new Date(report.created_at).toLocaleDateString()}
-                          </span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {report.created_at && (
+                            <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                              {new Date(report.created_at).toLocaleDateString()}
+                            </span>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                            onClick={(e) => handleDeleteReport(report.report_id, e)}
+                            disabled={deletingReportId === report.report_id}
+                            aria-label={`Delete report ${report.report_name}`}
+                          >
+                            {deletingReportId === report.report_id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                        </div>
                       </div>
                       <div className="flex flex-wrap gap-1.5 mt-3">
                         {report.kpis.map(k => (

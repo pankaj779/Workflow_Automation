@@ -199,19 +199,22 @@ export class DefaultService {
     }
     /**
      * Optimize Query
-     * Accept RAW SQL directly in body (no JSON escaping needed)
-     * @param requestBody
+     * Accept RAW SQL in body. Optional prompt for user intent (e.g. "Give first 2 rows").
+     * @param requestBody - Raw SQL string
+     * @param options - Optional { prompt } for intent-aware optimization
      * @returns any Successful Response
      * @throws ApiError
      */
     public static optimizeQueryQueryOptimizePost(
         requestBody: string,
+        options?: { prompt?: string },
     ): CancelablePromise<any> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/query/optimize',
             body: requestBody,
             mediaType: 'text/plain',
+            query: options?.prompt ? { prompt: options.prompt } : undefined,
             errors: {
                 422: `Validation Error`,
             },

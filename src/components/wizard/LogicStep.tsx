@@ -30,9 +30,11 @@ import { DefaultService } from "@/api-client";
    onRunQuery: (result: TablePreview) => void;
    onNext: () => void;
    onBack: () => void;
-   selectedTable: string;
-   setSelectedQueryV2: () => void;
+   selectedTable: string | { id: string; name: string; catalog: string; schema: string } | null;
+   setSelectedQueryV2: (sql: string) => void;
    tablePreviewRows: any;
+   onGeniePromptUsed?: (prompt: string) => void;
+   semanticPrompt?: string | null;
  }
  
  export function LogicStep({
@@ -52,13 +54,17 @@ import { DefaultService } from "@/api-client";
    onBack,
    selectedTable,
    setSelectedQueryV2,
-   tablePreviewRows
+   tablePreviewRows,
+   onGeniePromptUsed,
+   semanticPrompt
  }: LogicStepProps) {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isRunningOptimized, setIsRunningOptimized] = useState(false);
   const [copiedOptimized, setCopiedOptimized] = useState(false);
   const [editableOptimizedSQL, setEditableOptimizedSQL] = useState<string | null>(null);
+  const [optimizationScore, setOptimizationScore] = useState<number | null>(null);
+  const [optimizationChanges, setOptimizationChanges] = useState<string[]>([]);
   const [optimizedQueryResult, setOptimizedQueryResult] = useState<TablePreview | null>(null);
   const [selectedQuery, setSelectedQuery] = useState<'original' | 'optimized' | null>(null);
   const [showAIAssistant, setShowAIAssistant] = useState(true);
@@ -96,9 +102,12 @@ import { DefaultService } from "@/api-client";
         ? `\nGROUP BY ${groupByColumns.join(', ')}`
         : '';
 
+    const tblName = typeof selectedTable === 'string'
+      ? (selectedTable.split('.').pop() || selectedTable)
+      : (selectedTable?.name ?? '');
     return `SELECT
       ${selectParts.join(',\n  ')}
-    FROM poc_workspace.gold_plus_datamart.${selectedTable}${groupByClause}
+    FROM poc_workspace.gold_plus_datamart.${tblName}${groupByClause}
     ORDER BY metric_value DESC`;
   }, [queryBuilderConfig, selectedTable]);
   
@@ -143,11 +152,16 @@ import { DefaultService } from "@/api-client";
     try {
       setIsOptimizing(true);
 
-      const res = await DefaultService.optimizeQueryQueryOptimizePost(cleaned);
+      const intentPrompt = semanticPrompt || (aiPrompt.trim() || null);
+      const res = await DefaultService.optimizeQueryQueryOptimizePost(
+        cleaned,
+        intentPrompt ? { prompt: intentPrompt } : undefined
+      );
 
-      // response: { optimized_sql: "..." }
       if (res?.optimized_sql) {
         setEditableOptimizedSQL(res.optimized_sql);
+        setOptimizationScore(res?.optimization_score ?? null);
+        setOptimizationChanges(Array.isArray(res?.changes_made) ? res.changes_made : []);
       }
 
     } catch (err) {
@@ -296,20 +310,39 @@ import { DefaultService } from "@/api-client";
   //   }, 1500);
   // };
 
+  // Extract table name: backend expects table name only. DataSourceStep passes tbl.id (e.g. "catalog.schema.table_name")
+  const tableNameForGenie = (() => {
+    if (!selectedTable) return '';
+    if (typeof selectedTable === 'string') {
+      const parts = selectedTable.split('.');
+      return parts.length >= 3 ? parts[parts.length - 1] : parts[parts.length - 1] || selectedTable;
+    }
+    return (selectedTable && 'name' in selectedTable ? selectedTable.name : '') as string;
+  })();
+
   const handleAIGenerate = async () => {
     if (!aiPrompt.trim()) return;
+    if (!tableNameForGenie) {
+      console.error("Genie requires a table to be selected. Please select a data source first.");
+      return;
+    }
 
     try {
       setIsGenerating(true);
 
       const res = await DefaultService.generateSqlWithGenieQueryGeniePost({
         prompt: aiPrompt,
-        table: selectedTable
+        table: tableNameForGenie
       });
 
       // 👉 API returns: { sql, space_id }
       if (res?.sql) {
         onSQLChange(res.sql); // auto-fill textarea
+      }
+
+      // Store Genie prompt for semantic signature (prompt-based duplicate detection)
+      if (aiPrompt.trim() && onGeniePromptUsed) {
+        onGeniePromptUsed(aiPrompt.trim());
       }
 
       // (optional) store space_id later for lineage/debug
@@ -594,7 +627,7 @@ import { DefaultService } from "@/api-client";
                        size="sm"
                        className="h-7 text-xs gap-1"
                        onClick={handleAIGenerate}
-                       disabled={!aiPrompt.trim() || isGenerating}
+                       disabled={!aiPrompt.trim() || isGenerating || !tableNameForGenie}
                      >
                        {isGenerating ? (
                          <>
@@ -680,7 +713,20 @@ import { DefaultService } from "@/api-client";
                    <Sparkles className="h-4 w-4 text-success" />
                    <h3 className="text-sm font-medium">Optimized Query</h3>
                  </div>
-                 <div className="flex items-center gap-2">
+                 <div className="flex items-center gap-2 flex-wrap">
+                   {editableOptimizedSQL && optimizationScore !== null && (
+                     <Badge
+                       variant="outline"
+                       className={cn(
+                         "text-[10px] font-mono",
+                         optimizationScore >= 60 ? "text-success border-success/50 bg-success/10" :
+                         optimizationScore >= 20 ? "text-amber-600 border-amber-500/50 bg-amber-500/10" :
+                         "text-muted-foreground border-muted"
+                       )}
+                     >
+                       Score: {optimizationScore}%
+                     </Badge>
+                   )}
                    <Badge variant="outline" className="text-[10px] font-mono text-success border-success/40">
                      AI Enhanced
                    </Badge>
@@ -700,6 +746,16 @@ import { DefaultService } from "@/api-client";
                    )}
                  </div>
                </div>
+               {editableOptimizedSQL && optimizationChanges.length > 0 && (
+                 <div className="mb-3 p-2 rounded-md bg-muted/50 border border-border/50">
+                   <p className="text-[10px] font-medium text-muted-foreground mb-1.5">Changes made:</p>
+                   <ul className="text-[10px] text-foreground space-y-0.5 list-disc list-inside">
+                     {optimizationChanges.slice(0, 5).map((c, i) => (
+                       <li key={i}>{c}</li>
+                     ))}
+                   </ul>
+                 </div>
+               )}
                <Textarea
                  value={editableOptimizedSQL || ''}
                  onChange={(e) => setEditableOptimizedSQL(e.target.value)}

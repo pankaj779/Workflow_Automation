@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiCall } from "@/lib/api-config";
+import { useUser } from "@/hooks/useUser";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -18,11 +19,11 @@ interface ColdKPI {
 
 export default function ColdStoragePage() {
   const navigate = useNavigate();
+  const { user } = useUser();
   const [coldKpis, setColdKpis] = useState<ColdKPI[]>([]);
   const [allKpis, setAllKpis] = useState<any[]>([]);
   const [selectedKpiId, setSelectedKpiId] = useState<string>("");
   const [choice, setChoice] = useState<"delete" | "move_back" | "keep_cold" | "">("");
-  const [isRunning, setIsRunning] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const loadData = async () => {
@@ -30,8 +31,14 @@ export default function ColdStoragePage() {
       const kpiRes = await apiCall<any[]>("getKPIs");
       setAllKpis(kpiRes || []);
       const cold = (kpiRes || []).filter((k: any) => k.storage_status === "cold");
+      // Owners see only their own cold KPIs; admins see all
+      const userEmail = (user?.email || "").toLowerCase();
+      const isAdmin = user?.isAdmin ?? false;
+      const filtered = isAdmin
+        ? cold
+        : cold.filter((k: any) => (k.owner || "").toLowerCase() === userEmail);
       setColdKpis(
-        cold.map((r: any) => ({
+        filtered.map((r: any) => ({
           kpi_id: r.id,
           kpi_name: r.name,
           owner_team: r.owner,
@@ -46,27 +53,7 @@ export default function ColdStoragePage() {
 
   useEffect(() => {
     loadData();
-  }, []);
-
-  const handleRunColdStorage = async () => {
-    try {
-      setIsRunning(true);
-      await apiCall("runColdStorage", {
-        body: {
-          inactive_days_to_cold: 7,
-          cold_days_to_decision: 2,
-          admin_user_id: "admin",
-        },
-      });
-      toast.success("Cold storage evaluation completed");
-      await loadData();
-    } catch (e) {
-      toast.error("Cold storage job failed");
-      console.error(e);
-    } finally {
-      setIsRunning(false);
-    }
-  };
+  }, [user?.email, user?.isAdmin]);
 
   const handleOwnerDecision = async () => {
     if (!selectedKpiId || !choice) return;
@@ -75,7 +62,7 @@ export default function ColdStoragePage() {
       await apiCall("ownerDecision", {
         body: {
           kpi_id: selectedKpiId,
-          owner_id: "owner",
+          owner_id: user?.email || undefined,
           choice,
         },
       });
@@ -127,7 +114,9 @@ export default function ColdStoragePage() {
                 <Snowflake className="h-4 w-4 text-blue-500" />
               </div>
               <div>
-                <p className="text-[11px] text-muted-foreground">In Cold Storage</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {user?.isAdmin ? "In Cold Storage" : "Your Cold KPIs"}
+                </p>
                 <p className="text-xl font-bold text-foreground">{coldKpis.length}</p>
               </div>
             </CardContent>
@@ -163,26 +152,25 @@ export default function ColdStoragePage() {
           <Card className="border-border/60 shadow-sm">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-base font-semibold">Cold KPIs</CardTitle>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={handleRunColdStorage}
-                  disabled={isRunning}
-                  className="gap-1.5 h-8"
-                >
-                  {isRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                  {isRunning ? "Running..." : "Run Evaluation"}
-                </Button>
+                <CardTitle className="text-base font-semibold">
+                  {user?.isAdmin ? "Cold KPIs" : "Your Cold KPIs"}
+                </CardTitle>
               </div>
+              <p className="text-xs text-muted-foreground">
+                {user?.isAdmin
+                  ? "Cold storage runs automatically. This page is for viewing and owner actions."
+                  : "Only KPIs you own are shown here."}
+              </p>
             </CardHeader>
             <CardContent className="space-y-2 max-h-[500px] overflow-auto">
               {coldKpis.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 text-center">
                   <Snowflake className="h-10 w-10 text-muted-foreground/30 mb-3" />
-                  <p className="text-sm font-medium text-muted-foreground">No KPIs in cold storage</p>
+                  <p className="text-sm font-medium text-muted-foreground">
+                    {user?.isAdmin ? "No KPIs in cold storage" : "None of your KPIs are in cold storage"}
+                  </p>
                   <p className="text-xs text-muted-foreground/70 mt-1">
-                    Run the evaluation job to check for inactive KPIs.
+                    {user?.isAdmin ? "KPIs will move here automatically after inactivity." : "KPIs move to cold storage after prolonged inactivity."}
                   </p>
                 </div>
               ) : (

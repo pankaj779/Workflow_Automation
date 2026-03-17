@@ -39,10 +39,12 @@ export interface APIConfig {
     getDrafts: APIEndpoint;
     toggleFavorite: APIEndpoint;
     getReports: APIEndpoint;
+    getReportData: APIEndpoint;
     createReport: APIEndpoint;
     updateReport: APIEndpoint;
     deleteReport: APIEndpoint;
     getKPIMetrics: APIEndpoint;
+    getKPIValues: APIEndpoint;
 
     // Cold Storage & Notifications
     runColdStorage: APIEndpoint;
@@ -50,6 +52,11 @@ export interface APIConfig {
     approveDecision: APIEndpoint;
     listNotifications: APIEndpoint;
     markNotificationRead: APIEndpoint;
+    deleteNotification: APIEndpoint;
+
+    // Admin (RBAC)
+    getAdminStats: APIEndpoint;
+    getAdminPendingApprovals: APIEndpoint;
   };
 }
 
@@ -109,6 +116,11 @@ const configs: Record<string, APIConfig> = {
         method: 'GET',
         description: 'List reports with their KPIs',
       },
+      getReportData: {
+        url: '/reports/:reportId/data',
+        method: 'GET',
+        description: 'Get report with KPI data for charts',
+      },
       createReport: {
         url: '/reports',
         method: 'POST',
@@ -128,6 +140,11 @@ const configs: Record<string, APIConfig> = {
         url: '/kpis/:kpiId/metrics',
         method: 'GET',
         description: 'Get usage and cold-storage metrics for a KPI',
+      },
+      getKPIValues: {
+        url: '/kpis/:kpiId/values',
+        method: 'GET',
+        description: 'Get KPI metric values for charts',
       },
 
       runColdStorage: {
@@ -154,6 +171,21 @@ const configs: Record<string, APIConfig> = {
         url: '/notifications/:notificationId/read',
         method: 'POST',
         description: 'Mark a notification as read',
+      },
+      deleteNotification: {
+        url: '/notifications/:notificationId',
+        method: 'DELETE',
+        description: 'Delete a notification',
+      },
+      getAdminStats: {
+        url: '/admin/stats',
+        method: 'GET',
+        description: 'Admin dashboard stats',
+      },
+      getAdminPendingApprovals: {
+        url: '/admin/pending-approvals',
+        method: 'GET',
+        description: 'Pending cold storage approvals',
       },
     },
   },
@@ -184,15 +216,20 @@ const configs: Record<string, APIConfig> = {
       getDrafts: { url: '/drafts', method: 'GET', description: 'Get user draft KPIs' },
       toggleFavorite: { url: '/kpis/:kpiId/favorite', method: 'POST', description: 'Toggle KPI favorite' },
       getReports: { url: '/reports', method: 'GET', description: 'List reports with their KPIs' },
+      getReportData: { url: '/reports/:reportId/data', method: 'GET', description: 'Get report with KPI data for charts' },
       createReport: { url: '/reports', method: 'POST', description: 'Create a new report' },
       updateReport: { url: '/reports/:reportId', method: 'PUT', description: 'Update an existing report' },
       deleteReport: { url: '/reports/:reportId', method: 'DELETE', description: 'Soft-delete a report' },
       getKPIMetrics: { url: '/kpis/:kpiId/metrics', method: 'GET', description: 'Get usage and cold-storage metrics for a KPI' },
+      getKPIValues: { url: '/kpis/:kpiId/values', method: 'GET', description: 'Get KPI metric values for charts' },
       runColdStorage: { url: '/cold-storage/run', method: 'POST', description: 'Run cold storage job' },
       ownerDecision: { url: '/cold-storage/owner-decision', method: 'POST', description: 'Submit KPI owner decision for a cold KPI' },
       approveDecision: { url: '/cold-storage/approve', method: 'POST', description: 'Admin approves or rejects a cold storage decision' },
       listNotifications: { url: '/notifications', method: 'GET', description: 'List notifications for a user' },
       markNotificationRead: { url: '/notifications/:notificationId/read', method: 'POST', description: 'Mark a notification as read' },
+      deleteNotification: { url: '/notifications/:notificationId', method: 'DELETE', description: 'Delete a notification' },
+      getAdminStats: { url: '/admin/stats', method: 'GET', description: 'Admin dashboard stats' },
+      getAdminPendingApprovals: { url: '/admin/pending-approvals', method: 'GET', description: 'Pending cold storage approvals' },
     },
   },
 };

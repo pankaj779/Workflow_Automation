@@ -83,6 +83,7 @@ export default function CreateKPI() {
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [showExitDialog, setShowExitDialog] = useState(false);
   const [selectedQuery, setSelectedQuery] = useState("");
+  const [geniePrompt, setGeniePrompt] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedClusters.length || !selectedSchemas.length) {
@@ -285,10 +286,11 @@ export default function CreateKPI() {
             onRunQuery={handleRunQuery}
             onNext={() => setCurrentStep(4)}
             onBack={() => setCurrentStep(2)}
-            selectedTable={selectedTable as any}
-            setSelectedQueryV2={setSelectedQuery as any}
+            selectedTable={selectedTable}
+            setSelectedQueryV2={setSelectedQuery}
             tablePreviewRows={tablePreviewRows}
-
+            onGeniePromptUsed={setGeniePrompt}
+            semanticPrompt={geniePrompt}
           />
         )}
 
@@ -300,6 +302,7 @@ export default function CreateKPI() {
             table={selectedTargetTables[0]}
             columns={[]}
             metadata={{ ...metadata, category: selectedCategory }}
+            semanticPrompt={geniePrompt}
           />
         )}
 

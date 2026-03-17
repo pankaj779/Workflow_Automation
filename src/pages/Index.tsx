@@ -262,7 +262,6 @@ const Index = () => {
               ) : viewMode === 'grid' ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                   {filteredKPIs.map((kpi) => (
-                    <>
                     <KPICard 
                       key={kpi.id} 
                       {...kpi} 
@@ -270,20 +269,17 @@ const Index = () => {
                       onToggleFavorite={handleToggleFavorite}
                       onClick={() => handleCardClick(kpi)}
                     />
-                    </>
                   ))}
                 </div>
               ) : (
                 <div className="space-y-1.5">
                   {filteredKPIs.map((kpi) => (
-                    <>
                     <KPICard 
                       key={kpi.id} 
                       {...kpi} 
                       viewMode={viewMode}
                       onToggleFavorite={handleToggleFavorite}
                     />
-                    </>
                   ))}
                 </div>
               )}

@@ -19,6 +19,7 @@ from decimal import Decimal
 import random
 import string
 import re
+import threading
 
 
 try:
@@ -30,19 +31,20 @@ except ImportError:
 # Hard-code the OpenAI API key so Databricks Apps doesn’t need secrets.
 HARDCODED_OPENAI_KEY = "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"
 
-# Use the hardcoded key first, fall back to environment variable if someone overrides it.
-OPENAI_API_KEY = HARDCODED_OPENAI_KEY or os.getenv("OPENAI_API_KEY")
+# Prefer OPENAI_API_KEY from .env (load_dotenv runs first). Add OPENAI_API_KEY to .env to use your own key.
+_env_path = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(dotenv_path=_env_path)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or HARDCODED_OPENAI_KEY
 
 if OPENAI_AVAILABLE and OPENAI_API_KEY:
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
 else:
     openai_client = None
 
+
 # ==============================
-# Load ENV
+# Load ENV (already loaded above for OpenAI)
 # ==============================
-_env_path = os.path.join(os.path.dirname(__file__), ".env")
-load_dotenv(dotenv_path=_env_path)
 
 # ==============================
 # Databricks Config
@@ -54,12 +56,31 @@ DATABRICKS_TOKEN = os.getenv("DB_TOKEN")
 # #region agent log
 import time as _time
 _LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "debug-e56ee5.log")
+_DEBUG_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "debug-f798bc.log")
 def _dbg(loc, msg, data=None):
     import json as _j
     try:
         with open(_LOG_FILE, "a") as _f:
             _f.write(_j.dumps({"sessionId":"e56ee5","location":loc,"message":msg,"data":data or {},"timestamp":int(_time.time()*1000)})+"\n")
     except: pass
+
+
+def _agent_dbg(location: str, message: str, data=None, run_id: str = "pre-fix", hypothesis_id: str = "H1"):
+    import json as _j
+    payload = {
+        "sessionId": "f798bc",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data or {},
+        "timestamp": int(_time.time() * 1000),
+    }
+    try:
+        with open(_DEBUG_LOG_FILE, "a", encoding="utf-8") as _f:
+            _f.write(_j.dumps(payload) + "\n")
+    except Exception:
+        pass
 _dbg("main.py:startup", "env_loaded", {"env_path": _env_path, "env_exists": os.path.exists(_env_path), "DB_HOST": DATABRICKS_SERVER_HOSTNAME, "DB_HTTP_PATH": DATABRICKS_HTTP_PATH, "DB_TOKEN_set": bool(DATABRICKS_TOKEN), "cwd": os.getcwd()})
 # #endregion
 
@@ -117,6 +138,45 @@ app.add_middleware(
 
 LOCAL_USER_EMAIL = os.getenv("LOCAL_USER_EMAIL", "local-dev@example.com")
 
+# Admin emails (comma-separated). Users in this list get admin role for RBAC.
+_ADMIN_EMAILS_RAW = os.getenv("ADMIN_EMAILS", "")
+ADMIN_EMAILS: set = {e.strip().lower() for e in _ADMIN_EMAILS_RAW.split(",") if e.strip()}
+
+
+def _get_current_user_email(request: Request) -> str:
+    """Extract current user email from request (Databricks X-Forwarded-Email or LOCAL_USER_EMAIL)."""
+    return (
+        request.headers.get("X-Forwarded-Email")
+        or request.headers.get("X-Forwarded-User")
+        or LOCAL_USER_EMAIL
+    )
+
+
+def _is_admin(email: str) -> bool:
+    """Check if email is in admin list."""
+    if not email:
+        return False
+    return email.strip().lower() in ADMIN_EMAILS
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+# Automatic cold-storage scheduler config (env-driven)
+COLD_STORAGE_AUTO_ENABLED = os.getenv("COLD_STORAGE_AUTO_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+COLD_STORAGE_LOOP_SECONDS = _env_int("COLD_STORAGE_LOOP_SECONDS", 60)
+COLD_STORAGE_INACTIVE_DAYS = _env_int("COLD_STORAGE_INACTIVE_DAYS", 7)
+COLD_STORAGE_DECISION_DAYS = _env_int("COLD_STORAGE_DECISION_DAYS", 2)
+COLD_STORAGE_INACTIVE_MINUTES = _env_int("COLD_STORAGE_INACTIVE_MINUTES", 10)
+COLD_STORAGE_DECISION_MINUTES = _env_int("COLD_STORAGE_DECISION_MINUTES", 5)
+COLD_STORAGE_REMINDER_MINUTES = _env_int("COLD_STORAGE_REMINDER_MINUTES", 1)
+
+_cold_storage_scheduler_started = False
+
 _SUPPORTING_TABLES_DDL = {
     "reports": """
         report_id STRING,
@@ -141,7 +201,14 @@ _SUPPORTING_TABLES_DDL = {
         body STRING,
         is_read BOOLEAN,
         created_at TIMESTAMP,
-        kpi_id STRING
+        kpi_id STRING,
+        related_kpi_id STRING,
+        related_id STRING
+    """,
+    "kpi_values": """
+        kpi_id STRING,
+        created_at TIMESTAMP,
+        value_json STRING
     """,
     "cold_storage_decisions": """
         decision_id STRING,
@@ -151,7 +218,15 @@ _SUPPORTING_TABLES_DDL = {
         admin_email STRING,
         admin_action STRING,
         created_at TIMESTAMP,
-        resolved_at TIMESTAMP
+        resolved_at TIMESTAMP,
+        owner_choice STRING,
+        requested_by STRING,
+        requested_at TIMESTAMP,
+        approver_decision STRING,
+        decided_by STRING,
+        decided_at TIMESTAMP,
+        status STRING,
+        last_reminder_at TIMESTAMP
     """,
 }
 
@@ -183,6 +258,7 @@ def _ensure_supporting_tables():
                 _dbg("main.py:startup", "create_table_failed", {"table": fq, "error": str(e)})
 
     _backfill_semantic_signatures()
+    _start_cold_storage_scheduler()
 
 
 def _backfill_semantic_signatures():
@@ -209,12 +285,42 @@ def _backfill_semantic_signatures():
 
 @app.get("/me")
 def get_current_user(request: Request):
-    email = (
-        request.headers.get("X-Forwarded-Email")
-        or request.headers.get("X-Forwarded-User")
-        or LOCAL_USER_EMAIL
-    )
-    return {"email": email}
+    email = _get_current_user_email(request)
+    is_admin = _is_admin(email)
+    return {
+        "email": email,
+        "role": "admin" if is_admin else "user",
+        "isAdmin": is_admin,
+    }
+
+
+@app.get("/health/openai")
+def health_openai():
+    """
+    Test if OpenAI API is reachable and API key is valid.
+    Returns: { "ok": bool, "message": str }
+    """
+    if not openai_client:
+        return {"ok": False, "message": "OpenAI client not configured (missing import or API key)"}
+    try:
+        openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": "Say OK"}],
+            max_tokens=5,
+        )
+        return {"ok": True, "message": "OpenAI API is reachable and API key is valid"}
+    except Exception as e:
+        err = str(e).lower()
+        if "invalid" in err or "api_key" in err or "authentication" in err:
+            msg = "Invalid or expired OpenAI API key"
+        elif "rate" in err or "limit" in err:
+            msg = "OpenAI rate limit exceeded"
+        elif "connection" in err or "timeout" in err:
+            msg = "OpenAI connection failed (network/timeout)"
+        else:
+            msg = f"OpenAI error: {str(e)[:80]}"
+        return {"ok": False, "message": msg}
+
 
 # ==============================
 # Data Source Models
@@ -282,6 +388,7 @@ class QueryPreparationRequest(BaseModel):
     sql: str
     source_table: Optional[str] = None
     columns: List[str] = []
+    prompt: Optional[str] = None  # Genie prompt - used for prompt-based semantic signature when available
 
 class DownstreamUsage(BaseModel):
     name: str
@@ -447,17 +554,21 @@ class ColdStorageRunConfig(BaseModel):
     inactive_days_to_cold: int = 7
     cold_days_to_decision: int = 2
     admin_user_id: Optional[str] = None
+    # Optional minute-based windows for test mode
+    inactive_minutes_to_cold: Optional[int] = None
+    cold_minutes_to_decision: Optional[int] = None
+    reminder_minutes_interval: Optional[int] = None
 
 
 class OwnerDecisionRequest(BaseModel):
     kpi_id: str
-    owner_id: str
+    owner_id: Optional[str] = None  # Optional; backend uses current user from Request when not provided
     choice: str  # delete | move_back | keep_cold
 
 
 class ApprovalRequest(BaseModel):
     decision_id: str
-    approver_id: str
+    approver_id: Optional[str] = None  # Optional; backend uses current user from Request when not provided
     approve: bool
 
 # ==============================
@@ -535,20 +646,37 @@ def _extract_sql_skeleton(sql_text: str) -> str:
     return skeleton
 
 
-def generate_semantic_signature(sql_query: str) -> str:
+def _normalize_prompt_for_signature(prompt: str) -> str:
+    """Normalize prompt for consistent semantic hashing. Preserves intent, removes noise."""
+    if not prompt or not prompt.strip():
+        return ""
+    t = prompt.strip().lower()
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
+
+
+def generate_semantic_signature(sql_query: str, prompt: Optional[str] = None) -> str:
     """
-    Produce a semantic-style signature that is the same for equivalent SQL
-    queries regardless of formatting, aliasing, and common optimization
-    rewrites (column reordering, alias changes, whitespace, etc.).
+    Best-in-class semantic signature for duplicate detection.
+    Uses logical essence (tables, columns, filters, partitions) so equivalent queries
+    (e.g. correlated subquery vs CTE+ROW_NUMBER, optimized vs original) produce the same signature.
+    IMPORTANT: Uses SQL-only essence (prompt is ignored) so that duplicate detection
+    matches on logical equivalence regardless of how the query was created or optimized.
     """
-    if not sql_query or not sql_query.strip():
+    from .semantic_sql import extract_logical_essence, normalize_sql_for_essence
+
+    sql_part = ""
+    if sql_query and sql_query.strip():
+        essence = extract_logical_essence(sql_query)
+        sql_part = essence if essence else normalize_sql_for_essence(sql_query)
+
+    if not sql_part:
         return ""
 
-    skeleton = _extract_sql_skeleton(sql_query)
-    # #region agent log
-    _dbg("main.py:generate_semantic_signature", "skeleton", {"skeleton": skeleton[:200], "sql_first100": sql_query[:100]})
-    # #endregion
-    return hashlib.sha256(skeleton.encode()).hexdigest()[:16]
+    combined = "s:" + sql_part
+    sig = hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
+    _dbg("main.py:generate_semantic_signature", "combined", {"sql_len": len(sql_part), "sig": sig})
+    return sig
     
 def generate_kpi_id():
     code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
@@ -570,16 +698,33 @@ def generate_lineage_signature(source_table: str, columns: list[str]) -> str:
 
 
 def check_duplicate_kpi(metadata_signature: str, semantic_signature: str):
+    """
+    Returns list of duplicates with kpi_name, and which signature matched.
+    Each item: {"kpi_name": str, "matched_signature_type": "metadata"|"semantic", "matched_signature": str}
+    """
     try:
-        query = f"""
-            SELECT DISTINCT kpi_name
-            FROM {table("kpi_master")}
-            WHERE metadata_signature = ?
-               OR semantic_signature = ?
+        seen = set()
+        result = []
+        meta_query = f"""
+            SELECT kpi_name FROM {table("kpi_master")}
+            WHERE metadata_signature = ? AND is_deleted = false
         """
-        result = fetch_all(query, (metadata_signature, semantic_signature))
+        for row in fetch_all(meta_query, (metadata_signature,)):
+            k = row["kpi_name"]
+            if k not in seen:
+                seen.add(k)
+                result.append({"kpi_name": k, "matched_signature_type": "metadata", "matched_signature": metadata_signature})
+        sem_query = f"""
+            SELECT kpi_name FROM {table("kpi_master")}
+            WHERE semantic_signature = ? AND is_deleted = false
+        """
+        for row in fetch_all(sem_query, (semantic_signature,)):
+            k = row["kpi_name"]
+            if k not in seen:
+                seen.add(k)
+                result.append({"kpi_name": k, "matched_signature_type": "semantic", "matched_signature": semantic_signature})
         # #region agent log
-        _dbg("main.py:check_duplicate_kpi", "result", {"metadata_sig": metadata_signature, "semantic_sig": semantic_signature, "duplicates_found": len(result), "duplicates": result[:3] if result else []})
+        _dbg("main.py:check_duplicate_kpi", "result", {"metadata_sig": metadata_signature, "semantic_sig": semantic_signature, "duplicates_found": len(result)})
         # #endregion
         return result
     except Exception as e:
@@ -604,46 +749,100 @@ def run_sql_query(sql_text: str, limit: int = 100):
         "rows": rows,
     }
 
+def _sqlglot_format(sql_text: str) -> str:
+    """Use sqlglot to format SQL (proper indentation, consistent spacing)."""
+    try:
+        import sqlglot
+        parsed = sqlglot.parse_one(sql_text.strip())
+        return parsed.sql(dialect="databricks", pretty=True)
+    except Exception:
+        return " ".join(sql_text.strip().split())
+
+
 def optimize_sql(sql_text: str) -> str:
     """
-    Normalize / optimize SQL (same behavior as existing backend fallback)
+    Format and normalize SQL using sqlglot when available; fallback to whitespace join.
     """
-    return " ".join(sql_text.strip().split())
+    return _sqlglot_format(sql_text)
 
 
-def openai_with_optimize(sql_text: str) -> str:
-    prompt = f"""You are a Databricks SQL optimizer.
-            Query : {json.dumps(sql_text)}
-            Notes:
-            - Only aggregate the column specified by "metric_column" (if present and value_agg != "None").
-            - Every non-aggregated selected column must appear in the GROUP BY clause.
-            - When metric_column is null or value_agg is "None", do not aggregate; simply select the columns (respecting time_grain if Date is present).
-            Return strict JSON: {{"optimized_query": "...", "dq_checks": ["...","...","...","..."]}}."""
+def openai_with_optimize(sql_text: str, user_prompt: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Use OpenAI to optimize SQL. Returns {optimized_sql, optimization_score (0-100), changes_made: [...]}.
+    """
+    user_context = ""
+    if user_prompt:
+        user_context = f"""
+USER'S INTENT (MUST apply): {json.dumps(user_prompt)}
+- "Give first 2 rows" -> ADD LIMIT 2; "last week" -> add date filter; etc."""
+    else:
+        user_context = """
+You MUST make STRUCTURAL optimizations, not just formatting. Consider:
+1. FIX BUGS: typos (kpt->kpi, tz->t2), wrong table aliases, invalid references
+2. REWRITE: correlated subqueries -> JOINs/CTEs; redundant predicates removal
+3. ADD: LIMIT for preview queries if missing; predicate pushdown
+4. IMPROVE: combine AND conditions; use EXISTS instead of IN when beneficial
+Formatting alone = 0 score. At least one structural change required."""
+    prompt = f"""You are a Databricks SQL optimizer. OPTIMIZE the query structurally, not just format it.
+
+Query:
+{json.dumps(sql_text)}
+
+{user_context}
+
+Return ONLY valid JSON with this exact structure:
+{{"optimized_query": "<SQL string>", "optimization_score": <0-100>, "changes_made": ["change1", "change2", ...]}}
+
+Score guide: 0=format only, 20=typo fix, 40=minor rewrite, 60=subquery→JOIN, 80=major restructure, 100=best practice rewrite.
+changes_made: list what you did (e.g. "Fixed typo kpt_value->kpi_value", "Converted subquery to JOIN")."""
     try:
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Produce only JSON with SQL strings."},
+                {"role": "system", "content": "Produce only valid JSON. No markdown, no explanation."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.1,
-            max_tokens=900
+            temperature=0.2,
+            max_tokens=1200
         )
         content = response.choices[0].message.content.strip()
-        if content.startswith("```json"):
-            content = content[7:]
         if content.startswith("```"):
-            content = content[3:]
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        content = content.strip()
         if content.endswith("```"):
-            content = content[:-3]
+            content = content[:-3].strip()
         result = json.loads(content)
-        sql_text = result.get("optimized_query", "").strip()
-        if not sql_text:
+        optimized = result.get("optimized_query", "").strip()
+        if not optimized:
             raise ValueError("Missing optimized_query")
-        
-        return sql_text
-    except Exception:
-        return ""
+        score = result.get("optimization_score")
+        if not isinstance(score, (int, float)):
+            score = 50
+        score = max(0, min(100, int(score)))
+        changes = result.get("changes_made")
+        if not isinstance(changes, list):
+            changes = ["Optimization applied"] if score > 0 else ["Formatting only"]
+        return {
+            "optimized_sql": optimized,
+            "optimization_score": score,
+            "changes_made": changes[:10],
+        }
+    except Exception as ex:
+        err_msg = str(ex).lower()
+        if "invalid" in err_msg or "api_key" in err_msg or "authentication" in err_msg:
+            hint = "Invalid or expired OpenAI API key — check /health/openai"
+        elif "rate" in err_msg or "limit" in err_msg:
+            hint = "OpenAI rate limit exceeded"
+        else:
+            hint = "OpenAI unavailable or failed — check /health/openai for details"
+        fallback = optimize_sql(sql_text)
+        return {
+            "optimized_sql": fallback,
+            "optimization_score": 0,
+            "changes_made": [f"Format only — {hint}"],
+        }
 
 def get_tables_with_columns(schema: str):
     """
@@ -810,6 +1009,26 @@ def _ensure_kpi_master(fully_qualified: str) -> List[str]:
     return cols
 
 
+_KPI_VALUES_DDL = """
+    kpi_id STRING,
+    created_at TIMESTAMP,
+    value_json STRING
+"""
+
+
+def _ensure_kpi_values(fully_qualified: str) -> None:
+    """Create kpi_values table if it does not exist."""
+    try:
+        _get_table_columns(fully_qualified)
+    except Exception:
+        try:
+            execute(f"CREATE TABLE IF NOT EXISTS {fully_qualified} ({_KPI_VALUES_DDL.strip()})")
+            _dbg("main.py:_ensure_kpi_values", "created_table", {"table": fully_qualified})
+        except Exception as e:
+            _dbg("main.py:_ensure_kpi_values", "create_failed", {"table": fully_qualified, "error": str(e)})
+            raise
+
+
 # ==============================
 # Dashboard APIs
 # ==============================
@@ -957,7 +1176,9 @@ def _list_kpis_impl():
             data_source           AS dataSource,
             business_unit         AS businessUnit,
             complexity,
-            next_update           AS nextUpdate
+            next_update           AS nextUpdate,
+            storage_status        AS storage_status,
+            moved_to_cold_at      AS moved_to_cold_at
         FROM {table("kpi_master")}
         WHERE is_deleted = false
         ORDER BY updated_at DESC
@@ -1268,6 +1489,120 @@ def delete_report(report_id: str):
     )
     return {"message": "Report deleted"}
 
+
+@app.get("/reports/{report_id}/data")
+def get_report_data(report_id: str):
+    """
+    Returns report with KPI data for charts. Each KPI has rows from kpi_values
+    or from executing sql_definition if kpi_values is empty.
+    """
+    rows = fetch_all(
+        f"""
+        SELECT * FROM {table("reports")}
+        WHERE report_id = ? AND is_deleted = false
+        """,
+        (report_id,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Report not found")
+    report = rows[0]
+
+    kpi_ids = fetch_all(
+        f"SELECT kpi_id FROM {table('report_kpis')} WHERE report_id = ? ORDER BY added_at",
+        (report_id,),
+    )
+    kpi_ids = [r["kpi_id"] for r in kpi_ids]
+
+    kpis_with_data = []
+    for kpi_id in kpi_ids:
+        km = fetch_all(
+            f"SELECT kpi_id, kpi_name, sql_definition FROM {table('kpi_master')} WHERE kpi_id = ? AND is_deleted = false",
+            (kpi_id,),
+        )
+        if not km:
+            continue
+        kpi_name = km[0].get("kpi_name", kpi_id)
+        sql_def = km[0].get("sql_definition")
+
+        rows_data = []
+        try:
+            kv_rows = fetch_all(
+                f"SELECT value_json FROM {table('kpi_values')} WHERE kpi_id = ? ORDER BY created_at",
+                (kpi_id,),
+            )
+            if kv_rows:
+                for r in kv_rows:
+                    try:
+                        rows_data.append(json.loads(r["value_json"]))
+                    except Exception:
+                        pass
+            if not rows_data and sql_def:
+                result = run_sql_query(sql_def, limit=500)
+                rows_data = result.get("rows", [])
+        except Exception:
+            if sql_def:
+                try:
+                    result = run_sql_query(sql_def, limit=500)
+                    rows_data = result.get("rows", [])
+                except Exception:
+                    rows_data = []
+
+        kpis_with_data.append({
+            "kpi_id": kpi_id,
+            "kpi_name": kpi_name,
+            "rows": rows_data,
+        })
+
+    return {
+        "report_id": report["report_id"],
+        "report_name": report["report_name"],
+        "description": report.get("description"),
+        "kpis": kpis_with_data,
+    }
+
+
+@app.get("/kpis/{kpi_id}/values")
+def get_kpi_values(kpi_id: str):
+    """
+    Returns KPI metric values for charts. From kpi_values, or by executing sql_definition if empty.
+    """
+    km = fetch_all(
+        f"SELECT kpi_id, kpi_name, sql_definition FROM {table('kpi_master')} WHERE kpi_id = ? AND is_deleted = false",
+        (kpi_id,),
+    )
+    if not km:
+        raise HTTPException(status_code=404, detail="KPI not found")
+
+    rows_data = []
+    try:
+        kv_rows = fetch_all(
+            f"SELECT value_json FROM {table('kpi_values')} WHERE kpi_id = ? ORDER BY created_at",
+            (kpi_id,),
+        )
+        if kv_rows:
+            for r in kv_rows:
+                try:
+                    rows_data.append(json.loads(r["value_json"]))
+                except Exception:
+                    pass
+        if not rows_data and km[0].get("sql_definition"):
+            result = run_sql_query(km[0]["sql_definition"], limit=500)
+            rows_data = result.get("rows", [])
+    except Exception:
+        if km[0].get("sql_definition"):
+            try:
+                result = run_sql_query(km[0]["sql_definition"], limit=500)
+                rows_data = result.get("rows", [])
+            except Exception:
+                pass
+
+    return {
+        "kpi_id": kpi_id,
+        "kpi_name": km[0].get("kpi_name", kpi_id),
+        "rows": rows_data,
+    }
+
+
 # ==============================
 # Data Source APIs (dynamic catalogs/schemas)
 # ==============================
@@ -1380,17 +1715,29 @@ def preview_table(schema: str, table: str, catalog: Optional[str] = None):
         return {"columns": [], "rows": []}
 
 @app.post("/query/optimize")
-def optimize_query(sql: str = Body(..., media_type="text/plain")):
+def optimize_query(
+    request: Request,
+    sql: str = Body(..., media_type="text/plain"),
+):
     """
-    Accept RAW SQL directly in body (no JSON escaping needed)
+    Accept RAW SQL in body. Optional ?prompt=... query param for user intent.
+    Returns: optimized_sql, optimization_score (0-100), changes_made (list of changes).
     """
     try:
+        user_prompt = request.query_params.get("prompt", "").strip() or None
         if not openai_client:
-            optimized = optimize_sql(sql)
-        else:
-            optimized = openai_with_optimize(sql)
-        print(optimized)
-        return {"optimized_sql": optimized}
+            formatted = optimize_sql(sql)
+            return {
+                "optimized_sql": formatted,
+                "optimization_score": 0,
+                "changes_made": ["Format only — OpenAI not configured"],
+            }
+        result = openai_with_optimize(sql, user_prompt=user_prompt)
+        return {
+            "optimized_sql": result["optimized_sql"],
+            "optimization_score": result["optimization_score"],
+            "changes_made": result["changes_made"],
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
@@ -1468,7 +1815,7 @@ def query_preparation(req: QueryPreparationRequest):
     try:
         # --- Generate signatures ---
         metadata_sig = generate_metadata_signature(req.sql)
-        semantic_sig = generate_semantic_signature(req.sql)
+        semantic_sig = generate_semantic_signature(req.sql, prompt=req.prompt)
         lineage_sig = generate_lineage_signature(
             req.source_table or "unknown",
             req.columns or [],
@@ -1481,9 +1828,12 @@ def query_preparation(req: QueryPreparationRequest):
         duplicates = check_duplicate_kpi(metadata_sig, semantic_sig)
 
         if duplicates:
+            first = duplicates[0]
             return {
                 "duplicate": True,
-                "existing_kpis": duplicates,
+                "existing_kpis": [{"kpi_name": d["kpi_name"]} for d in duplicates],
+                "matched_signature_type": first["matched_signature_type"],
+                "matched_signature": first["matched_signature"],
                 "metadata_signature": metadata_sig,
                 "semantic_signature": semantic_sig,
             }
@@ -1672,10 +2022,11 @@ def publish_final_kpi(req: PublishKPIRequest):
         )
 
         # -----------------------------
-        # Execute KPI query → store values (optional — kpi_values may not exist)
+        # Execute KPI query → store values in kpi_values (create table if not exists)
         # -----------------------------
         rows_inserted = 0
         try:
+            _ensure_kpi_values(table("kpi_values"))
             result = run_sql_query(req.sql, limit=10000)
             for row in result["rows"]:
                 execute(
@@ -1687,8 +2038,8 @@ def publish_final_kpi(req: PublishKPIRequest):
                     (kpi_id, now, json.dumps(row, default=decimal_serializer)),
                 )
             rows_inserted = len(result["rows"])
-        except Exception:
-            pass
+        except Exception as ex:
+            _dbg("main.py:publish_final_kpi", "kpi_values_insert_failed", {"error": str(ex)})
 
         return {
             "kpi_id": kpi_id,
@@ -1805,6 +2156,21 @@ def _insert_notification(
     return notification_id
 
 
+def _notify_admins(
+    type_: str,
+    title: str,
+    body: str,
+    related_kpi_id: Optional[str] = None,
+    related_id: Optional[str] = None,
+):
+    """Insert a notification for each admin. If no admins configured, notify 'admin' fallback."""
+    if ADMIN_EMAILS:
+        for admin_email in ADMIN_EMAILS:
+            _insert_notification(admin_email, "admin", type_, title, body, related_kpi_id, related_id)
+    else:
+        _insert_notification("admin", "admin", type_, title, body, related_kpi_id, related_id)
+
+
 @app.get("/notifications", response_model=List[Notification])
 def list_notifications(user_id: str):
     rows = fetch_all(
@@ -1846,17 +2212,112 @@ def mark_notification_read(notification_id: str):
     return {"message": "Notification marked as read"}
 
 
-@app.post("/cold-storage/run")
-def run_cold_storage(config: ColdStorageRunConfig):
+@app.delete("/notifications/{notification_id}")
+def delete_notification(notification_id: str, user_id: Optional[str] = None):
+    # #region agent log
+    _agent_dbg(
+        "main.py:delete_notification:entry",
+        "delete notification requested",
+        {"notification_id": notification_id, "has_user_id": bool(user_id)},
+        run_id="post-fix",
+        hypothesis_id="H11",
+    )
+    # #endregion
+    try:
+        if user_id:
+            execute(
+                f"""
+                DELETE FROM {table("notifications")}
+                WHERE notification_id = ? AND user_id = ?
+                """,
+                (notification_id, user_id),
+            )
+        else:
+            execute(
+                f"""
+                DELETE FROM {table("notifications")}
+                WHERE notification_id = ?
+                """,
+                (notification_id,),
+            )
+        # #region agent log
+        _agent_dbg(
+            "main.py:delete_notification:success",
+            "notification deleted",
+            {"notification_id": notification_id},
+            run_id="post-fix",
+            hypothesis_id="H11",
+        )
+        # #endregion
+        return {"message": "Notification deleted"}
+    except Exception as ex:
+        # #region agent log
+        _agent_dbg(
+            "main.py:delete_notification:error",
+            "notification delete failed",
+            {"notification_id": notification_id, "error": str(ex)},
+            run_id="post-fix",
+            hypothesis_id="H11",
+        )
+        # #endregion
+        raise
+
+
+def _run_cold_storage_core(config: ColdStorageRunConfig, run_source: str = "manual"):
     """
     One-shot execution of cold storage logic.
-    Intended to be triggered by a scheduler or manually.
+    Requires admin role when ADMIN_EMAILS is configured. Scheduler may use admin token.
     """
-    now = datetime.utcnow()
-    admin_id = config.admin_user_id or "admin"
+    # #region agent log
+    _agent_dbg(
+        "main.py:run_cold_storage:entry",
+        "cold storage run request received",
+        {
+            "inactive_days_to_cold": config.inactive_days_to_cold,
+            "cold_days_to_decision": config.cold_days_to_decision,
+            "inactive_minutes_to_cold": config.inactive_minutes_to_cold,
+            "cold_minutes_to_decision": config.cold_minutes_to_decision,
+            "reminder_minutes_interval": config.reminder_minutes_interval,
+            "run_source": run_source,
+        },
+        run_id="post-fix",
+        hypothesis_id="H1",
+    )
+    # #endregion
+
+    # Build dynamic windows: minute-based values override day-based values (for testing).
+    inactive_cutoff_expr = (
+        f"from_unixtime(unix_timestamp() - {int(config.inactive_minutes_to_cold) * 60})"
+        if config.inactive_minutes_to_cold and int(config.inactive_minutes_to_cold) > 0
+        else f"date_sub(current_timestamp(), {config.inactive_days_to_cold})"
+    )
+    decision_cutoff_expr = (
+        f"from_unixtime(unix_timestamp() - {int(config.cold_minutes_to_decision) * 60})"
+        if config.cold_minutes_to_decision and int(config.cold_minutes_to_decision) > 0
+        else f"date_sub(current_timestamp(), {config.cold_days_to_decision})"
+    )
+    reminder_interval_seconds = (
+        int(config.reminder_minutes_interval) * 60
+        if config.reminder_minutes_interval and int(config.reminder_minutes_interval) > 0
+        else 21600
+    )
+
+    # #region agent log
+    _agent_dbg(
+        "main.py:run_cold_storage:computed-windows",
+        "computed cold storage timing windows",
+        {
+            "inactive_cutoff_expr": inactive_cutoff_expr,
+            "decision_cutoff_expr": decision_cutoff_expr,
+            "reminder_interval_seconds": reminder_interval_seconds,
+            "mode": "minutes" if config.inactive_minutes_to_cold or config.cold_minutes_to_decision else "days",
+        },
+        run_id="post-fix",
+        hypothesis_id="H5",
+    )
+    # #endregion
 
     # 1) Move inactive KPIs to cold storage
-    inactive_threshold = now.replace(microsecond=0)  # simplify comparison
     inactive_sql = f"""
         SELECT kpi_id, kpi_name, owner_team
         FROM {table("kpi_master")}
@@ -1864,7 +2325,7 @@ def run_cold_storage(config: ColdStorageRunConfig):
           AND (storage_status IS NULL OR storage_status = 'active')
           AND (
                 last_used_at IS NULL
-                OR last_used_at < date_sub(current_timestamp(), {config.inactive_days_to_cold})
+                OR last_used_at < {inactive_cutoff_expr}
           )
     """
     to_cold = fetch_all(inactive_sql)
@@ -1874,6 +2335,7 @@ def run_cold_storage(config: ColdStorageRunConfig):
             f"""
             UPDATE {table("kpi_master")}
             SET storage_status = 'cold',
+                status = 'Inactive',
                 moved_to_cold_at = current_timestamp(),
                 cold_move_count = COALESCE(cold_move_count, 0) + 1
             WHERE kpi_id = ?
@@ -1881,11 +2343,11 @@ def run_cold_storage(config: ColdStorageRunConfig):
             (k["kpi_id"],),
         )
 
-        # notify admin and owner
+        # notify all admins and owner
         owner_id = k.get("owner_team") or "owner"
         title = f"KPI moved to cold storage: {k['kpi_name']}"
         body = f"KPI {k['kpi_name']} ({k['kpi_id']}) has been moved to cold storage due to inactivity."
-        _insert_notification(admin_id, "admin", "moved_to_cold", title, body, related_kpi_id=k["kpi_id"])
+        _notify_admins("moved_to_cold", title, body, related_kpi_id=k["kpi_id"])
         _insert_notification(owner_id, "owner", "moved_to_cold", title, body, related_kpi_id=k["kpi_id"])
 
     # 2) For KPIs in cold for >= Y days with no decision, create pending decisions
@@ -1895,7 +2357,7 @@ def run_cold_storage(config: ColdStorageRunConfig):
         WHERE is_deleted = false
           AND storage_status = 'cold'
           AND moved_to_cold_at IS NOT NULL
-          AND moved_to_cold_at < date_sub(current_timestamp(), {config.cold_days_to_decision})
+          AND moved_to_cold_at < {decision_cutoff_expr}
           AND kpi_id NOT IN (
               SELECT kpi_id
               FROM {table("cold_storage_decisions")}
@@ -1921,23 +2383,160 @@ def run_cold_storage(config: ColdStorageRunConfig):
         title = f"Action required for KPI in cold storage: {k['kpi_name']}"
         body = (
             f"Your KPI {k['kpi_name']} ({k['kpi_id']}) has been in cold storage for "
-            f"{config.cold_days_to_decision} days. Choose: Delete, Move back, or Keep in cold."
+            f"{config.cold_minutes_to_decision} minutes. Choose: Delete, Move back, or Keep in cold."
+            if config.cold_minutes_to_decision and int(config.cold_minutes_to_decision) > 0
+            else f"{config.cold_days_to_decision} days. Choose: Delete, Move back, or Keep in cold."
         )
         _insert_notification(owner_id, "owner", "owner_choice", title, body, related_kpi_id=k["kpi_id"], related_id=decision_id)
 
+    # 3) Send reminders (every 6h) to owners with open decisions
+    # #region agent log
+    _agent_dbg(
+        "main.py:run_cold_storage:reminder-window",
+        "using fixed reminder interval window",
+        {"interval_seconds": reminder_interval_seconds, "interval_minutes": int(reminder_interval_seconds / 60)},
+        run_id="post-fix",
+        hypothesis_id="H2",
+    )
+    # #endregion
+    reminders_sql = f"""
+        SELECT d.decision_id, d.kpi_id, d.requested_by
+        FROM {table("cold_storage_decisions")} d
+        JOIN {table("kpi_master")} k ON k.kpi_id = d.kpi_id
+        WHERE d.status = 'open' AND d.approver_decision = 'pending'
+          AND k.is_deleted = false AND k.storage_status = 'cold'
+          AND (d.last_reminder_at IS NULL OR d.last_reminder_at < from_unixtime(unix_timestamp() - {reminder_interval_seconds}))
+    """
+    try:
+        reminder_rows = fetch_all(reminders_sql)
+    except Exception:
+        reminder_rows = []
+    reminder_count = 0
+    for r in reminder_rows:
+        owner_id = (r.get("requested_by") or "owner").strip()
+        if not owner_id:
+            continue
+        try:
+            execute(
+                f"UPDATE {table('cold_storage_decisions')} SET last_reminder_at = current_timestamp() WHERE decision_id = ?",
+                (r["decision_id"],),
+            )
+            title = f"Reminder: Action required for KPI in cold storage"
+            body = (
+                f"Your KPI ({r['kpi_id']}) will require action. Choose: Delete, Move back, or Keep in cold. "
+                "Please take action in the Cold Storage page."
+            )
+            _insert_notification(
+                owner_id, "owner", "cold_reminder", title, body,
+                related_kpi_id=r["kpi_id"], related_id=r["decision_id"],
+            )
+            reminder_count += 1
+        except Exception:
+            pass
+
+    # #region agent log
+    _agent_dbg(
+        "main.py:run_cold_storage:result",
+        "cold storage run result",
+        {
+            "moved_to_cold": len(to_cold),
+            "pending_decisions_created": len(needing_decision),
+            "reminders_sent": reminder_count,
+            "mode": "minutes" if config.inactive_minutes_to_cold or config.cold_minutes_to_decision else "days",
+        },
+        run_id="post-fix",
+        hypothesis_id="H4",
+    )
+    # #endregion
     return {
         "moved_to_cold": len(to_cold),
         "pending_decisions_created": len(needing_decision),
+        "reminders_sent": reminder_count,
     }
 
 
+def _build_auto_cold_storage_config() -> ColdStorageRunConfig:
+    """Build scheduler config from env vars."""
+    return ColdStorageRunConfig(
+        inactive_days_to_cold=COLD_STORAGE_INACTIVE_DAYS,
+        cold_days_to_decision=COLD_STORAGE_DECISION_DAYS,
+        inactive_minutes_to_cold=COLD_STORAGE_INACTIVE_MINUTES,
+        cold_minutes_to_decision=COLD_STORAGE_DECISION_MINUTES,
+        reminder_minutes_interval=COLD_STORAGE_REMINDER_MINUTES,
+    )
+
+
+def _cold_storage_scheduler_loop():
+    # #region agent log
+    _agent_dbg(
+        "main.py:cold_storage_scheduler:start",
+        "cold storage scheduler started",
+        {
+            "loop_seconds": COLD_STORAGE_LOOP_SECONDS,
+            "auto_enabled": COLD_STORAGE_AUTO_ENABLED,
+            "inactive_minutes": COLD_STORAGE_INACTIVE_MINUTES,
+            "decision_minutes": COLD_STORAGE_DECISION_MINUTES,
+            "reminder_minutes": COLD_STORAGE_REMINDER_MINUTES,
+        },
+        run_id="post-fix",
+        hypothesis_id="H13",
+    )
+    # #endregion
+    while True:
+        try:
+            cfg = _build_auto_cold_storage_config()
+            _run_cold_storage_core(cfg, run_source="scheduler")
+        except Exception as ex:
+            # #region agent log
+            _agent_dbg(
+                "main.py:cold_storage_scheduler:error",
+                "cold storage scheduler iteration failed",
+                {"error": str(ex)},
+                run_id="post-fix",
+                hypothesis_id="H13",
+            )
+            # #endregion
+        _time.sleep(max(10, COLD_STORAGE_LOOP_SECONDS))
+
+
+def _start_cold_storage_scheduler():
+    global _cold_storage_scheduler_started
+    if _cold_storage_scheduler_started or not COLD_STORAGE_AUTO_ENABLED:
+        return
+    _cold_storage_scheduler_started = True
+    t = threading.Thread(target=_cold_storage_scheduler_loop, name="cold-storage-scheduler", daemon=True)
+    t.start()
+
+
+@app.post("/cold-storage/run")
+def run_cold_storage(config: ColdStorageRunConfig, request: Request):
+    """
+    Manual trigger for cold storage run (optional). Core flow runs automatically via scheduler.
+    """
+    current_user = _get_current_user_email(request)
+    # #region agent log
+    _agent_dbg(
+        "main.py:run_cold_storage:manual-trigger",
+        "manual cold storage trigger invoked",
+        {"current_user": current_user},
+        run_id="post-fix",
+        hypothesis_id="H14",
+    )
+    # #endregion
+    return _run_cold_storage_core(config, run_source="manual")
+
+
 @app.post("/cold-storage/owner-decision")
-def owner_decision(req: OwnerDecisionRequest):
+def owner_decision(req: OwnerDecisionRequest, request: Request):
     """
     KPI Owner submits a choice for a KPI in cold storage.
+    owner_id defaults to current user from request (X-Forwarded-Email).
     """
     if req.choice not in ("delete", "move_back", "keep_cold"):
         raise HTTPException(status_code=400, detail="Invalid choice")
+
+    current_user = _get_current_user_email(request)
+    owner_id = (req.owner_id or current_user).strip() or "owner"
 
     rows = fetch_all(
         f"""
@@ -1952,10 +2551,27 @@ def owner_decision(req: OwnerDecisionRequest):
         (req.kpi_id,),
     )
     if not rows:
-        raise HTTPException(status_code=404, detail="No open decision for KPI")
+        # #region agent log
+        _agent_dbg(
+            "main.py:owner_decision:no-open-decision",
+            "owner decision attempted before open decision exists",
+            {"kpi_id": req.kpi_id, "owner_id": owner_id},
+            run_id="post-fix",
+            hypothesis_id="H6",
+        )
+        # #endregion
+        raise HTTPException(
+            status_code=400,
+            detail="No open owner decision yet. Run cold storage evaluation after the decision window elapses.",
+        )
 
     decision = rows[0]
     decision_id = decision["decision_id"]
+    kpi_owner = (decision.get("requested_by") or "").strip().lower()
+
+    # Optionally validate: only KPI owner or admin can submit decision (allow both for flexibility)
+    if kpi_owner and owner_id.strip().lower() != kpi_owner and not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Only the KPI owner can submit this decision")
 
     execute(
         f"""
@@ -1966,19 +2582,25 @@ def owner_decision(req: OwnerDecisionRequest):
         (req.choice, decision_id),
     )
 
-    # notify admin that owner has made a choice
+    # notify all admins that owner has made a choice
     title = f"KPI owner decision for KPI {req.kpi_id}"
-    body = f"Owner {req.owner_id} requested action '{req.choice}' for KPI {req.kpi_id}."
-    _insert_notification("admin", "admin", "approval_request", title, body, related_kpi_id=req.kpi_id, related_id=decision_id)
+    body = f"Owner {owner_id} requested action '{req.choice}' for KPI {req.kpi_id}."
+    _notify_admins("approval_request", title, body, related_kpi_id=req.kpi_id, related_id=decision_id)
 
     return {"decision_id": decision_id, "message": "Owner decision recorded"}
 
 
 @app.post("/cold-storage/approve")
-def approve_cold_storage(req: ApprovalRequest):
+def approve_cold_storage(req: ApprovalRequest, request: Request):
     """
     Admin approves or rejects the owner's cold storage decision.
+    Requires admin role. approver_id defaults to current user from request.
     """
+    current_user = _get_current_user_email(request)
+    approver_id = (req.approver_id or current_user).strip() or "admin"
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin role required to approve cold storage decisions")
+
     rows = fetch_all(
         f"""
         SELECT *
@@ -2007,7 +2629,7 @@ def approve_cold_storage(req: ApprovalRequest):
             status = 'closed'
         WHERE decision_id = ?
         """,
-        (decision_str, req.approver_id, req.decision_id),
+        (decision_str, approver_id, req.decision_id),
     )
 
     # apply action if approved
@@ -2026,6 +2648,7 @@ def approve_cold_storage(req: ApprovalRequest):
                 f"""
                 UPDATE {table("kpi_master")}
                 SET storage_status = 'active',
+                    status = 'Active',
                     moved_to_cold_at = NULL
                 WHERE kpi_id = ?
                 """,
@@ -2038,10 +2661,114 @@ def approve_cold_storage(req: ApprovalRequest):
     # notify owner of result
     owner_id = decision.get("requested_by") or "owner"
     title = f"Admin {decision_str} your request for KPI {kpi_id}"
-    body = f"Your requested action '{owner_choice}' on KPI {kpi_id} was {decision_str} by {req.approver_id}."
+    body = f"Your requested action '{owner_choice}' on KPI {kpi_id} was {decision_str} by {approver_id}."
     _insert_notification(owner_id, "owner", "approval_result", title, body, related_kpi_id=kpi_id, related_id=req.decision_id)
 
     return {"message": f"Decision {decision_str}", "applied": bool(req.approve)}
+
+
+# ==============================
+# Admin API (RBAC: admin only)
+# ==============================
+
+
+@app.get("/admin/stats")
+def admin_stats(request: Request):
+    """Admin dashboard stats: total KPIs, active, cold, deleted, pending approvals."""
+    current_user = _get_current_user_email(request)
+    if ADMIN_EMAILS and not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+    try:
+        total = fetch_all(
+            f"SELECT COUNT(*) AS c FROM {table('kpi_master')} WHERE is_deleted = false"
+        )
+        total_kpis = total[0].get("c", 0) if total else 0
+
+        active = fetch_all(
+            f"""
+            SELECT COUNT(*) AS c FROM {table("kpi_master")}
+            WHERE is_deleted = false AND (storage_status IS NULL OR storage_status = 'active')
+            """
+        )
+        active_kpis = active[0].get("c", 0) if active else 0
+
+        cold = fetch_all(
+            f"""
+            SELECT COUNT(*) AS c FROM {table("kpi_master")}
+            WHERE is_deleted = false AND storage_status = 'cold'
+            """
+        )
+        cold_kpis = cold[0].get("c", 0) if cold else 0
+
+        deleted = fetch_all(
+            f"SELECT COUNT(*) AS c FROM {table('kpi_master')} WHERE is_deleted = true"
+        )
+        deleted_kpis = deleted[0].get("c", 0) if deleted else 0
+
+        pending = fetch_all(
+            f"""
+            SELECT COUNT(*) AS c FROM {table("cold_storage_decisions")}
+            WHERE status = 'open' AND approver_decision = 'pending' AND owner_choice IS NOT NULL
+            """
+        )
+        pending_approvals = pending[0].get("c", 0) if pending else 0
+
+        awaiting_owner = fetch_all(
+            f"""
+            SELECT COUNT(*) AS c FROM {table("cold_storage_decisions")}
+            WHERE status = 'open' AND (owner_choice IS NULL OR owner_choice = '')
+            """
+        )
+        awaiting_owner_count = awaiting_owner[0].get("c", 0) if awaiting_owner else 0
+
+        return {
+            "total_kpis": total_kpis,
+            "active_kpis": active_kpis,
+            "cold_kpis": cold_kpis,
+            "deleted_kpis": deleted_kpis,
+            "pending_approvals": pending_approvals,
+            "awaiting_owner_decision": awaiting_owner_count,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/pending-approvals")
+def admin_pending_approvals(request: Request):
+    """List cold storage decisions awaiting admin approval (owner has made a choice)."""
+    current_user = _get_current_user_email(request)
+    if ADMIN_EMAILS and not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+    try:
+        rows = fetch_all(
+            f"""
+            SELECT d.decision_id, d.kpi_id, d.owner_choice, d.requested_by, d.requested_at
+            FROM {table("cold_storage_decisions")} d
+            WHERE d.status = 'open' AND d.approver_decision = 'pending' AND d.owner_choice IS NOT NULL
+            ORDER BY d.requested_at DESC
+            """
+        )
+        decisions = []
+        for r in rows:
+            kpi_rows = fetch_all(
+                f"SELECT kpi_name, owner_team FROM {table('kpi_master')} WHERE kpi_id = ?",
+                (r["kpi_id"],),
+            )
+            kpi_name = kpi_rows[0].get("kpi_name", r["kpi_id"]) if kpi_rows else r["kpi_id"]
+            decisions.append({
+                "decision_id": r["decision_id"],
+                "kpi_id": r["kpi_id"],
+                "kpi_name": kpi_name,
+                "owner_choice": r.get("owner_choice"),
+                "requested_by": r.get("requested_by"),
+                "requested_at": str(r.get("requested_at")) if r.get("requested_at") else None,
+            })
+        return {"decisions": decisions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ================= REACT STATIC SERVING LAST =================
 BASE_DIR = os.path.abspath(

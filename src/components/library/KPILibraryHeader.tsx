@@ -1,12 +1,16 @@
+import { useEffect, useState, type MouseEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Workflow, Plus, Search, RefreshCw, Sparkles, LayoutGrid, List, Star, Bell, FileBarChart, Snowflake, BarChart3 } from "lucide-react";
+import { Workflow, Plus, Search, RefreshCw, Sparkles, LayoutGrid, List, Star, Bell, FileBarChart, Snowflake, BarChart3, Shield, Trash2 } from "lucide-react";
 import { DraftsDrawer } from "./DraftsDrawer";
 import { cn } from "@/lib/utils";
 import { useNavigate, useLocation } from "react-router-dom";
+import { useUser } from "@/hooks/useUser";
+import { apiCall } from "@/lib/api-config";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 interface DraftKPI {
   id: string;
@@ -31,6 +35,14 @@ interface KPILibraryHeaderProps {
   favoriteCount: number;
 }
 
+interface AppNotification {
+  notification_id: string;
+  title: string;
+  body: string;
+  is_read: boolean;
+  created_at?: string;
+}
+
 export function KPILibraryHeader({
   onCreateNew,
   lastSync,
@@ -46,12 +58,67 @@ export function KPILibraryHeader({
 }: KPILibraryHeaderProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user } = useUser();
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+
+  const loadNotifications = async () => {
+    if (!user?.email) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H7',location:'KPILibraryHeader.tsx:loadNotifications',message:'loading notifications for current user',data:{hasEmail:Boolean(user?.email)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    try {
+      const rows = await apiCall<AppNotification[]>("listNotifications", {
+        queryParams: { user_id: user.email },
+      });
+      setNotifications(Array.isArray(rows) ? rows : []);
+    } catch {
+      setNotifications([]);
+    }
+  };
+
+  const markNotificationRead = async (notificationId: string) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H8',location:'KPILibraryHeader.tsx:markNotificationRead',message:'marking notification as read',data:{notificationId},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    try {
+      await apiCall("markNotificationRead", {
+        params: { notificationId },
+      });
+      await loadNotifications();
+    } catch {
+      // no-op
+    }
+  };
+
+  const deleteNotification = async (notificationId: string, event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    // #region agent log
+    fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H12',location:'KPILibraryHeader.tsx:deleteNotification',message:'delete notification clicked',data:{notificationId},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    try {
+      await apiCall("deleteNotification", {
+        params: { notificationId },
+        queryParams: user?.email ? { user_id: user.email } : undefined,
+      });
+      await loadNotifications();
+    } catch {
+      // no-op
+    }
+  };
+
+  useEffect(() => {
+    loadNotifications();
+  }, [user?.email]);
+
+  const unreadCount = notifications.filter((n) => !n.is_read).length;
 
   const navItems = [
     { path: "/", label: "KPI Library", icon: LayoutGrid },
     { path: "/reports", label: "Reports", icon: FileBarChart },
     { path: "/kpi-metrics", label: "KPI Metrics", icon: BarChart3 },
     { path: "/cold-storage", label: "Cold Storage", icon: Snowflake },
+    ...(user?.isAdmin ? [{ path: "/admin", label: "Admin", icon: Shield }] : []),
   ];
 
   return (
@@ -114,18 +181,68 @@ export function KPILibraryHeader({
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 relative"
-                    onClick={() => {
-                      // Navigate to KPI metrics or notifications page when added
-                      // For now this is a visual bell placeholder.
-                    }}
-                  >
-                    <Bell className="h-4 w-4" />
-                    <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-primary border border-background" />
-                  </Button>
+                  <Popover open={isNotifOpen} onOpenChange={setIsNotifOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 relative"
+                        onClick={() => loadNotifications()}
+                      >
+                        <Bell className="h-4 w-4" />
+                        {unreadCount > 0 && (
+                          <span className="absolute -top-0.5 -right-0.5 h-4 min-w-4 px-1 rounded-full bg-primary border border-background text-[9px] text-primary-foreground flex items-center justify-center">
+                            {unreadCount > 9 ? "9+" : unreadCount}
+                          </span>
+                        )}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-[360px] p-0">
+                      <div className="px-3 py-2 border-b border-border">
+                        <p className="text-sm font-medium">Notifications</p>
+                        <p className="text-[11px] text-muted-foreground">Cold storage and KPI events</p>
+                      </div>
+                      <div className="max-h-[320px] overflow-auto">
+                        {notifications.length === 0 ? (
+                          <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+                            No notifications yet.
+                          </div>
+                        ) : (
+                          notifications.map((n) => (
+                            <button
+                              key={n.notification_id}
+                              onClick={() => markNotificationRead(n.notification_id)}
+                              className={cn(
+                                "w-full text-left px-3 py-2.5 border-b border-border/50 hover:bg-muted/50 transition-colors",
+                                !n.is_read && "bg-primary/5",
+                              )}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="text-xs font-medium text-foreground line-clamp-2">{n.title}</p>
+                                {!n.is_read && <span className="mt-1 h-2 w-2 rounded-full bg-primary shrink-0" />}
+                              </div>
+                              <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{n.body}</p>
+                              {n.created_at && (
+                                <p className="text-[10px] text-muted-foreground/80 mt-1">
+                                  {new Date(n.created_at).toLocaleString()}
+                                </p>
+                              )}
+                              <div className="mt-1 flex justify-end">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                                  onClick={(e) => deleteNotification(n.notification_id, e)}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
                   <p className="text-xs">Notifications (cold storage, reports, and KPI events)</p>
