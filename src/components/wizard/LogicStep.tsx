@@ -14,6 +14,8 @@ import { mockOptimizedSQL, mockQueryResult, mockOptimizedQueryResult, aggregatio
 import { ChevronLeft, ChevronRight, Code, Wand2, Play, Sparkles, Columns, Clock, Layers, Copy, Check, Bot, Send, X, Eye } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DefaultService } from "@/api-client";
+import { apiCall } from "@/lib/api-config";
+import { toast } from "sonner";
 
  interface LogicStepProps {
    tableColumns: string[];
@@ -33,6 +35,7 @@ import { DefaultService } from "@/api-client";
    selectedTable: string | { id: string; name: string; catalog: string; schema: string } | null;
    setSelectedQueryV2: (sql: string) => void;
    tablePreviewRows: any;
+   selectedColumns?: { tableName: string; tableId: string; columns: string[] }[];
    onGeniePromptUsed?: (prompt: string) => void;
    semanticPrompt?: string | null;
  }
@@ -55,6 +58,7 @@ import { DefaultService } from "@/api-client";
    selectedTable,
    setSelectedQueryV2,
    tablePreviewRows,
+   selectedColumns = [],
    onGeniePromptUsed,
    semanticPrompt
  }: LogicStepProps) {
@@ -70,6 +74,9 @@ import { DefaultService } from "@/api-client";
   const [showAIAssistant, setShowAIAssistant] = useState(true);
   const [aiPrompt, setAiPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [sampleDialogOpen, setSampleDialogOpen] = useState(false);
+  const [multiTablePreview, setMultiTablePreview] = useState<{ tableName: string; columns: string[]; rows: Record<string, unknown>[] }[]>([]);
+  const [multiTableLoading, setMultiTableLoading] = useState(false);
  
    // Generate query preview from builder config
    const builderQueryPreview = useMemo(() => {
@@ -121,6 +128,58 @@ import { DefaultService } from "@/api-client";
       });
     }
   }, [initialSelectedColumns]);
+
+  // Fetch preview when Sample Data dialog opens (from selectedColumns or selectedTable)
+  useEffect(() => {
+    if (!sampleDialogOpen) {
+      setMultiTablePreview([]);
+      return;
+    }
+    const tablesToFetch: { tableId: string; tableName: string; columns: string[] }[] = [];
+    if (selectedColumns?.length) {
+      selectedColumns.forEach((s) => tablesToFetch.push({ tableId: s.tableId, tableName: s.tableName, columns: s.columns }));
+    } else if (typeof selectedTable === "string" && selectedTable.includes(".")) {
+      const parts = selectedTable.split(".");
+      tablesToFetch.push({ tableId: selectedTable, tableName: parts[parts.length - 1] || selectedTable, columns: tableColumns || [] });
+    }
+    if (!tablesToFetch.length) {
+      setMultiTablePreview([]);
+      return;
+    }
+    const fetchAll = async () => {
+      setMultiTableLoading(true);
+      try {
+        const results: { tableName: string; columns: string[]; rows: Record<string, unknown>[] }[] = [];
+        for (const sel of tablesToFetch) {
+          const parts = sel.tableId.split(".");
+          const catalog = parts[0] || "";
+          const schema = parts[1] || "";
+          const table = parts.length >= 3 ? parts.slice(2).join(".") : (parts[parts.length - 1] || sel.tableName);
+          try {
+            const res = await apiCall<{ columns: string[]; rows: Record<string, unknown>[] }>("getTablePreview", {
+              queryParams: { catalog, schema, table },
+            });
+            const cols = res.columns || [];
+            const displayCols = sel.columns?.length ? sel.columns.filter((c) => cols.includes(c)) : cols;
+            const rows = (res.rows || []).map((r) => {
+              const out: Record<string, unknown> = {};
+              displayCols.forEach((c) => (out[c] = r[c]));
+              return out;
+            });
+            results.push({ tableName: sel.tableName, columns: displayCols.length ? displayCols : (sel.columns || cols), rows });
+          } catch {
+            results.push({ tableName: sel.tableName, columns: sel.columns || [], rows: [] });
+          }
+        }
+        setMultiTablePreview(results);
+      } catch {
+        setMultiTablePreview([]);
+      } finally {
+        setMultiTableLoading(false);
+      }
+    };
+    fetchAll();
+  }, [sampleDialogOpen, selectedColumns, selectedTable, tableColumns]);
   //  const handleOptimize = () => {
   //    setIsOptimizing(true);
   //    setTimeout(() => {
@@ -312,32 +371,57 @@ import { DefaultService } from "@/api-client";
 
   // Extract table name: backend expects table name only. DataSourceStep passes tbl.id (e.g. "catalog.schema.table_name")
   const tableNameForGenie = (() => {
-    if (!selectedTable) return '';
-    if (typeof selectedTable === 'string') {
-      const parts = selectedTable.split('.');
+    if (!selectedTable) return "";
+    if (typeof selectedTable === "string") {
+      const parts = selectedTable.split(".");
       return parts.length >= 3 ? parts[parts.length - 1] : parts[parts.length - 1] || selectedTable;
     }
-    return (selectedTable && 'name' in selectedTable ? selectedTable.name : '') as string;
+    return (selectedTable && "name" in selectedTable ? selectedTable.name : "") as string;
   })();
+
+  // Extract catalog.schema.table from prompt (e.g. "poc_workspace.gold_plus_datamart.repatha_final_merged")
+  const tableIdsFromPrompt = useMemo(() => {
+    const matches = aiPrompt.match(/\b([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b/g);
+    return matches ? [...new Set(matches)] : [];
+  }, [aiPrompt]);
+
+  const hasTableForGenie =
+    !!tableNameForGenie ||
+    (selectedColumns?.length ?? 0) > 0 ||
+    (typeof selectedTable === "string" && !!selectedTable?.includes(".")) ||
+    tableIdsFromPrompt.length > 0;
 
   const handleAIGenerate = async () => {
     if (!aiPrompt.trim()) return;
-    if (!tableNameForGenie) {
-      console.error("Genie requires a table to be selected. Please select a data source first.");
+    if (!hasTableForGenie) {
+      toast.error("Genie requires a table. Select a data source in step 1, or mention table names in your prompt (e.g. poc_workspace.schema.table).");
       return;
     }
+    const tableIds =
+      selectedColumns?.length > 0
+        ? selectedColumns.map((s) => s.tableId)
+        : typeof selectedTable === "string" && selectedTable.includes(".")
+        ? [selectedTable]
+        : tableIdsFromPrompt.length > 0
+        ? tableIdsFromPrompt
+        : [];
 
     try {
       setIsGenerating(true);
 
-      const res = await DefaultService.generateSqlWithGenieQueryGeniePost({
+      const body: { prompt: string; table: string; table_identifiers?: string[] } = {
         prompt: aiPrompt,
-        table: tableNameForGenie
-      });
+        table: tableNameForGenie || (tableIds[0] ? tableIds[0].split(".").pop() || "" : "") || "unknown",
+      };
+      if (tableIds.length > 0) {
+        body.table_identifiers = tableIds;
+      }
+      const res = await DefaultService.generateSqlWithGenieQueryGeniePost(body);
 
       // 👉 API returns: { sql, space_id }
       if (res?.sql) {
-        onSQLChange(res.sql); // auto-fill textarea
+        onSQLChange(res.sql);
+        toast.success("SQL generated successfully");
       }
 
       // Store Genie prompt for semantic signature (prompt-based duplicate detection)
@@ -351,8 +435,19 @@ import { DefaultService } from "@/api-client";
       setShowAIAssistant(false);
       setAiPrompt("");
 
-    } catch (err) {
+    } catch (err: unknown) {
       console.error("Genie generation failed", err);
+      let msg = "Genie generation failed";
+      if (err && typeof err === "object" && "body" in err) {
+        const b = (err as { body?: unknown }).body;
+        if (b && typeof b === "object" && "detail" in b) {
+          const d = (b as { detail?: unknown }).detail;
+          msg = typeof d === "string" ? d : Array.isArray(d) ? (d as { msg?: string }[]).map((x) => x?.msg || String(x)).join("; ") : String(d);
+        }
+      } else if (err instanceof Error) {
+        msg = err.message;
+      }
+      toast.error(msg);
     } finally {
       setIsGenerating(false);
     }
@@ -366,44 +461,95 @@ import { DefaultService } from "@/api-client";
             Build your query using the visual builder or write custom SQL.
           </p>
         </div>
-        <Dialog>
+        <Dialog open={sampleDialogOpen} onOpenChange={setSampleDialogOpen}>
           <DialogTrigger asChild>
             <Button variant="outline" size="sm" className="gap-1.5 shrink-0">
               <Eye className="h-3.5 w-3.5" />
               View Sample Data
-          </Button>
+            </Button>
           </DialogTrigger>
           <DialogContent className="max-w-4xl max-h-[80vh]">
             <DialogHeader>
               <DialogTitle>Sample Data Preview</DialogTitle>
             </DialogHeader>
-            <ScrollArea className="h-[400px] rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    {tableColumns.map((col) => (
-                      <TableHead key={col} className="whitespace-nowrap font-medium">
-                        {col}
-                      </TableHead>
+            {(selectedColumns?.length >= 1 || (typeof selectedTable === "string" && selectedTable?.includes("."))) ? (
+              <ScrollArea className="h-[400px] rounded-md border">
+                {multiTableLoading ? (
+                  <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
+                    Loading previews...
+                  </div>
+                ) : (
+                  <div className="space-y-6 p-4">
+                    {multiTablePreview.map((tbl, tIdx) => (
+                      <div key={tIdx}>
+                        <p className="text-sm font-medium text-muted-foreground mb-2">
+                          {tbl.tableName} ({tbl.columns.length} columns)
+                        </p>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              {tbl.columns.map((col) => (
+                                <TableHead key={col} className="whitespace-nowrap font-medium">
+                                  {col}
+                                </TableHead>
+                              ))}
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {(tbl.rows || []).slice(0, 5).map((row, idx) => (
+                              <TableRow key={idx}>
+                                {tbl.columns.map((col) => (
+                                  <TableCell key={col} className="text-xs whitespace-nowrap">
+                                    {String(row[col] ?? "-")}
+                                  </TableCell>
+                                ))}
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                        {(!tbl.rows || tbl.rows.length === 0) && (
+                          <p className="text-xs text-muted-foreground py-2">No rows</p>
+                        )}
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Showing first {Math.min((tbl.rows || []).length, 5)} rows.
+                        </p>
+                      </div>
                     ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {tablePreviewRows.map((row, idx) => (
-                    <TableRow key={idx}>
-                      {tableColumns.map((col) => (
-                        <TableCell key={col} className="text-xs whitespace-nowrap">
-                          {String(row[col] ?? '-')}
-                        </TableCell>
+                  </div>
+                )}
+                <ScrollBar orientation="horizontal" />
+              </ScrollArea>
+            ) : (
+              <ScrollArea className="h-[400px] rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      {(tableColumns || []).map((col) => (
+                        <TableHead key={col} className="whitespace-nowrap font-medium">
+                          {col}
+                        </TableHead>
                       ))}
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              <ScrollBar orientation="horizontal" />
-            </ScrollArea>
+                  </TableHeader>
+                  <TableBody>
+                    {(tablePreviewRows || []).map((row, idx) => (
+                      <TableRow key={idx}>
+                        {(tableColumns || []).map((col) => (
+                          <TableCell key={col} className="text-xs whitespace-nowrap">
+                            {String(row[col] ?? "-")}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                <ScrollBar orientation="horizontal" />
+              </ScrollArea>
+            )}
             <p className="text-xs text-muted-foreground mt-2">
-              Showing first {tablePreviewRows.length} rows from the selected table.
+              {(selectedColumns?.length >= 1 || (typeof selectedTable === "string" && selectedTable?.includes(".")))
+                ? `Showing preview for ${selectedColumns?.length || 1} table(s).`
+                : `Showing first ${(tablePreviewRows || []).length} rows from the selected table.`}
             </p>
           </DialogContent>
         </Dialog>
@@ -627,7 +773,7 @@ import { DefaultService } from "@/api-client";
                        size="sm"
                        className="h-7 text-xs gap-1"
                        onClick={handleAIGenerate}
-                       disabled={!aiPrompt.trim() || isGenerating || !tableNameForGenie}
+                       disabled={!aiPrompt.trim() || isGenerating || !hasTableForGenie}
                      >
                        {isGenerating ? (
                          <>

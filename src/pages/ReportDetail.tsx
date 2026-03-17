@@ -165,35 +165,37 @@ export default function ReportDetailPage() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
-                {/* Summary stats */}
-                <div className="mt-4 flex flex-wrap gap-4 pt-4 border-t border-border/60">
-                  <div>
-                    <p className="text-[10px] text-muted-foreground uppercase">Total</p>
-                    <p className="text-sm font-semibold">
-                      {chartData.reduce((s, d) => s + d.value, 0).toLocaleString()}
-                    </p>
+                {/* Summary stats - only when we have 2+ data points (min/max/avg meaningful) */}
+                {chartData.length >= 2 && (
+                  <div className="mt-4 flex flex-wrap gap-4 pt-4 border-t border-border/60">
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase">Total</p>
+                      <p className="text-sm font-semibold">
+                        {chartData.reduce((s, d) => s + d.value, 0).toLocaleString()}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase">Average</p>
+                      <p className="text-sm font-semibold">
+                        {(
+                          chartData.reduce((s, d) => s + d.value, 0) / chartData.length
+                        ).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase">Max</p>
+                      <p className="text-sm font-semibold">
+                        {Math.max(...chartData.map((d) => d.value)).toLocaleString()}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase">Min</p>
+                      <p className="text-sm font-semibold">
+                        {Math.min(...chartData.map((d) => d.value)).toLocaleString()}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-[10px] text-muted-foreground uppercase">Average</p>
-                    <p className="text-sm font-semibold">
-                      {(
-                        chartData.reduce((s, d) => s + d.value, 0) / chartData.length
-                      ).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-muted-foreground uppercase">Max</p>
-                    <p className="text-sm font-semibold">
-                      {Math.max(...chartData.map((d) => d.value)).toLocaleString()}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-muted-foreground uppercase">Min</p>
-                    <p className="text-sm font-semibold">
-                      {Math.min(...chartData.map((d) => d.value)).toLocaleString()}
-                    </p>
-                  </div>
-                </div>
+                )}
               </CardContent>
             </Card>
           );

@@ -146,7 +146,11 @@ export function KPICard({
   };
 
   return (
-    <div className="card-enterprise overflow-hidden">
+    <div
+      className="card-enterprise overflow-hidden cursor-pointer hover:ring-2 hover:ring-primary/30 transition-all"
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+    >
       {/* Main row - compact */}
       <div className="px-2 py-1.5 flex items-center gap-2">
         {/* Info */}

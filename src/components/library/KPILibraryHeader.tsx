@@ -181,23 +181,24 @@ export function KPILibraryHeader({
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Popover open={isNotifOpen} onOpenChange={setIsNotifOpen}>
-                    <PopoverTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 relative"
-                        onClick={() => loadNotifications()}
-                      >
-                        <Bell className="h-4 w-4" />
-                        {unreadCount > 0 && (
-                          <span className="absolute -top-0.5 -right-0.5 h-4 min-w-4 px-1 rounded-full bg-primary border border-background text-[9px] text-primary-foreground flex items-center justify-center">
-                            {unreadCount > 9 ? "9+" : unreadCount}
-                          </span>
-                        )}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent align="end" className="w-[360px] p-0">
+                  <span className="inline-block">
+                    <Popover open={isNotifOpen} onOpenChange={setIsNotifOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 relative"
+                          onClick={() => loadNotifications()}
+                        >
+                          <Bell className="h-4 w-4" />
+                          {unreadCount > 0 && (
+                            <span className="absolute -top-0.5 -right-0.5 h-4 min-w-4 px-1 rounded-full bg-primary border border-background text-[9px] text-primary-foreground flex items-center justify-center">
+                              {unreadCount > 9 ? "9+" : unreadCount}
+                            </span>
+                          )}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-[360px] p-0">
                       <div className="px-3 py-2 border-b border-border">
                         <p className="text-sm font-medium">Notifications</p>
                         <p className="text-[11px] text-muted-foreground">Cold storage and KPI events</p>
@@ -241,8 +242,9 @@ export function KPILibraryHeader({
                           ))
                         )}
                       </div>
-                    </PopoverContent>
-                  </Popover>
+                      </PopoverContent>
+                    </Popover>
+                  </span>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
                   <p className="text-xs">Notifications (cold storage, reports, and KPI events)</p>

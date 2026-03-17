@@ -338,7 +338,8 @@ class OptimizeQueryRequest(BaseModel):
 
 class GenieQueryRequest(BaseModel):
     prompt: str
-    table: str
+    table: str  # Legacy: single table name (uses DB_CATALOG.DB_SCHEMA.table)
+    table_identifiers: Optional[List[str]] = None  # Full catalog.schema.table for single or multi-table
 
 class ExecuteQueryRequest(BaseModel):
     sql: str
@@ -578,6 +579,7 @@ class ApprovalRequest(BaseModel):
 
 class AdminWarnOwnerRequest(BaseModel):
     decision_id: str
+    custom_message: Optional[str] = None  # If provided, use as body; else use default warning
 
 
 class AdminActionRequest(BaseModel):
@@ -1754,37 +1756,98 @@ def optimize_query(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
-@app.post("/query/genie")
-def generate_sql_with_genie(req: GenieQueryRequest):
-    """
-    Generate SQL using Databricks Genie
-    """
+def _get_table_column_metadata(table_identifier: str) -> Dict[str, Dict]:
+    """Fetch column metadata for a table via DESCRIBE."""
     try:
-        table_identifier = f"{DB_CATALOG}.{DB_SCHEMA}.{req.table}"
-
-        # minimal column metadata (Genie requires structure)
         desc_rows = fetch_all(f"DESCRIBE TABLE {table_identifier}")
-        column_metadata = {
+        return {
             _col_name(r): {"type": _data_type(r), "comment": ""}
             for r in desc_rows
             if _col_name(r) and not _col_name(r).startswith("#")
         }
+    except Exception as e:
+        raise ValueError(f"Failed to describe table {table_identifier}: {e}") from e
+
+
+@app.post("/query/genie")
+def generate_sql_with_genie(req: GenieQueryRequest):
+    """
+    Generate SQL using Databricks Genie. Supports single or multiple tables from different schemas.
+    Use table_identifiers for full catalog.schema.table (e.g. ["poc_workspace.gold_plus_datamart.t1", "poc_workspace.default.t2"]).
+    """
+    # #region agent log
+    try:
+        _agent_dbg(
+            "main.py:genie:request",
+            "genie request received",
+            {"prompt_len": len(req.prompt or ""), "table": req.table, "table_identifiers": req.table_identifiers},
+            run_id="genie-debug",
+            hypothesis_id="H1",
+        )
+    except Exception:
+        pass
+    # #endregion
+    try:
+        tables_for_genie = []
+        if req.table_identifiers and len(req.table_identifiers) > 0:
+            for tid in req.table_identifiers:
+                tid = (tid or "").strip()
+                if not tid:
+                    continue
+                col_meta = _get_table_column_metadata(tid)
+                if col_meta:
+                    tables_for_genie.append((tid, col_meta))
+                else:
+                    raise ValueError(f"Table {tid} has no columns or does not exist")
+            if not tables_for_genie:
+                raise ValueError("No valid tables provided in table_identifiers")
+        else:
+            table_identifier = f"{DB_CATALOG}.{DB_SCHEMA}.{req.table}"
+            col_meta = _get_table_column_metadata(table_identifier)
+            if not col_meta:
+                raise ValueError(f"Table {table_identifier} has no columns or does not exist")
+            tables_for_genie = [(table_identifier, col_meta)]
+
+        warehouse_id = (DATABRICKS_HTTP_PATH or "").split("/")[-1]
+        if not warehouse_id:
+            raise ValueError("DB_HTTP_PATH not configured (missing warehouse ID)")
+        if not DATABRICKS_SERVER_HOSTNAME or not DATABRICKS_TOKEN:
+            raise ValueError("DB_HOST and DB_TOKEN must be set for Genie")
 
         space_id, sql_text, error = ask_genie(
-            table_identifier=table_identifier,
-            column_metadata=column_metadata,
+            table_identifier=tables_for_genie[0][0],
+            column_metadata=tables_for_genie[0][1],
             prompt=req.prompt,
-            warehouse_id=DATABRICKS_HTTP_PATH.split("/")[-1],
+            warehouse_id=warehouse_id,
             host=DATABRICKS_SERVER_HOSTNAME,
             token=DATABRICKS_TOKEN,
+            tables=tables_for_genie if len(tables_for_genie) > 1 else None,
         )
 
         if error:
-            raise Exception(error)
+            raise ValueError(error)
+        if not sql_text:
+            raise ValueError("Genie did not return SQL")
 
         return {"sql": sql_text, "space_id": space_id}
 
+    except ValueError as e:
+        # #region agent log
+        try:
+            _agent_dbg("main.py:genie:value_error", "genie ValueError", {"error": str(e)}, run_id="genie-debug", hypothesis_id="H2")
+        except Exception:
+            pass
+        # #endregion
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
+        # #region agent log
+        try:
+            _agent_dbg("main.py:genie:exception", "genie Exception", {"error": str(e), "type": type(e).__name__}, run_id="genie-debug", hypothesis_id="H3")
+        except Exception:
+            pass
+        # #endregion
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/query/run")
@@ -2749,11 +2812,12 @@ def admin_warn_owner(req: AdminWarnOwnerRequest, request: Request):
     owner_id = (decision.get("requested_by") or "owner").strip()
     kpi_id = decision["kpi_id"]
 
-    title = "Admin warning: Action required for KPI in cold storage"
-    body = (
+    default_body = (
         f"An admin has requested you to take action on KPI {kpi_id} in cold storage. "
         "Please choose: Delete, Move back, or Keep in cold from the Cold Storage page."
     )
+    title = "Admin warning: Action required for KPI in cold storage"
+    body = (req.custom_message or "").strip() or default_body
     _insert_notification(
         owner_id, "owner", "admin_warning", title, body,
         related_kpi_id=kpi_id, related_id=req.decision_id,

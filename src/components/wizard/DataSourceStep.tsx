@@ -748,7 +748,6 @@ export function DataSourceStep({
         <Button
           onClick={onNext}
           size="sm"
-          disabled={totalSelectedColumns === 0}
           className={cn(
             "gap-1.5",
             totalSelectedColumns > 0 && "bg-primary hover:bg-primary/90"

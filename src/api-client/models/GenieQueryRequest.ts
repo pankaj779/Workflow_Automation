@@ -5,5 +5,6 @@
 export type GenieQueryRequest = {
     prompt: string;
     table: string;
+    table_identifiers?: string[];
 };
 

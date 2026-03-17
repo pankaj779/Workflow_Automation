@@ -289,10 +289,6 @@ export async function apiCall<T>(
     url += (url.includes('?') ? '&' : '?') + qs;
   }
 
-  // #region agent log
-  fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e56ee5'},body:JSON.stringify({sessionId:'e56ee5',location:'api-config.ts:apiCall',message:'apiCall',data:{endpointKey,url,method:endpoint.method},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
-
   const response = await fetch(url, {
     method: endpoint.method,
     headers: {

@@ -279,6 +279,7 @@ const Index = () => {
                       {...kpi} 
                       viewMode={viewMode}
                       onToggleFavorite={handleToggleFavorite}
+                      onClick={() => handleCardClick(kpi)}
                     />
                   ))}
                 </div>

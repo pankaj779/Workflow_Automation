@@ -27,6 +27,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Textarea } from "@/components/ui/textarea";
 
 interface AdminStats {
   total_kpis: number;
@@ -66,6 +68,8 @@ export default function AdminPage() {
   const [approving, setApproving] = useState<string | null>(null);
   const [warningDecisionId, setWarningDecisionId] = useState<string | null>(null);
   const [actingDecisionId, setActingDecisionId] = useState<string | null>(null);
+  const [warnPopoverOpen, setWarnPopoverOpen] = useState<string | null>(null);
+  const [customWarningText, setCustomWarningText] = useState("");
 
   const loadAdminData = async () => {
     try {
@@ -108,9 +112,6 @@ export default function AdminPage() {
         cold_minutes_to_decision: 5,
         reminder_minutes_interval: 1,
       };
-      // #region agent log
-      fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H3',location:'Admin.tsx:handleRunColdStorage',message:'frontend payload for minute-based cold storage run',data:payload,timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       await apiCall("runColdStorage", {
         body: payload,
       });
@@ -144,11 +145,15 @@ export default function AdminPage() {
     }
   };
 
-  const handleWarnOwner = async (decisionId: string) => {
+  const handleWarnOwner = async (decisionId: string, customMessage?: string) => {
     try {
       setWarningDecisionId(decisionId);
-      await apiCall("adminWarnOwner", { body: { decision_id: decisionId } });
-      toast.success("Warning sent to owner");
+      await apiCall("adminWarnOwner", {
+        body: { decision_id: decisionId, ...(customMessage && { custom_message: customMessage }) },
+      });
+      toast.success(customMessage ? "Custom warning sent" : "Default warning sent to owner");
+      setWarnPopoverOpen(null);
+      setCustomWarningText("");
       await loadAdminData();
     } catch (e) {
       toast.error("Failed to send warning");
@@ -360,20 +365,62 @@ export default function AdminPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="gap-1"
-                        onClick={() => handleWarnOwner(d.decision_id)}
-                        disabled={warningDecisionId === d.decision_id}
+                      <Popover
+                        open={warnPopoverOpen === d.decision_id}
+                        onOpenChange={(open) => {
+                          setWarnPopoverOpen(open ? d.decision_id : null);
+                          if (!open) setCustomWarningText("");
+                        }}
                       >
-                        {warningDecisionId === d.decision_id ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Send className="h-3.5 w-3.5" />
-                        )}
-                        Send Warning
-                      </Button>
+                        <PopoverTrigger asChild>
+                          <Button size="sm" variant="outline" className="gap-1">
+                            <Send className="h-3.5 w-3.5" />
+                            Send Warning
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-80" align="end">
+                          <div className="space-y-3">
+                            <p className="text-sm font-medium">Send warning to owner</p>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              className="w-full gap-1"
+                              onClick={() => handleWarnOwner(d.decision_id)}
+                              disabled={warningDecisionId === d.decision_id}
+                            >
+                              {warningDecisionId === d.decision_id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Send className="h-3.5 w-3.5" />
+                              )}
+                              Send default warning
+                            </Button>
+                            <div className="border-t pt-3">
+                              <label className="text-xs text-muted-foreground">Or write custom message:</label>
+                              <Textarea
+                                placeholder="Type your custom warning..."
+                                className="mt-1.5 min-h-[60px]"
+                                value={customWarningText}
+                                onChange={(e) => setCustomWarningText(e.target.value)}
+                              />
+                              <Button
+                                size="sm"
+                                variant="default"
+                                className="mt-2 w-full gap-1"
+                                onClick={() => handleWarnOwner(d.decision_id, customWarningText)}
+                                disabled={warningDecisionId === d.decision_id || !customWarningText.trim()}
+                              >
+                                {warningDecisionId === d.decision_id ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Send className="h-3.5 w-3.5" />
+                                )}
+                                Send custom warning
+                              </Button>
+                            </div>
+                          </div>
+                        </PopoverContent>
+                      </Popover>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button

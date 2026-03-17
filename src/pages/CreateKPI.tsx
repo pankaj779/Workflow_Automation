@@ -173,6 +173,30 @@ export default function CreateKPI() {
     }
   };
 
+  const handleCreateAnother = () => {
+    setCurrentStep(1);
+    setSelectedClusters([]);
+    setSelectedSchemas([]);
+    setSelectedTableIds([]);
+    setPreviewingTable(null);
+    setSelectedColumns([]);
+    setTablePreviewRows([]);
+    setSelectedTable(null);
+    setTablePreview(null);
+    setMetadata(initialMetadata);
+    setQueryBuilderConfig(initialQueryBuilderConfig);
+    setSqlQuery("");
+    setOptimizedSQL(null);
+    setQueryResult(null);
+    setSignatures({ metadata: "", lineage: "", semantic: null });
+    setIsDuplicate(false);
+    setIsComplete(false);
+    setSelectedTargetTables([]);
+    setSelectedCategory("");
+    setSelectedQuery("");
+    setGeniePrompt(null);
+  };
+
   const canNavigateToStep = (stepId: number): boolean => {
     switch (stepId) {
       case 1: return true;
@@ -274,6 +298,7 @@ export default function CreateKPI() {
           <LogicStep
             tableColumns={selectedColumns.length > 0 ? selectedColumns[0].columns : (tablePreview?.columns || mockTablePreview.columns)}
             initialSelectedColumns={selectedColumns}
+            selectedColumns={selectedColumns}
             queryMode={queryMode}
             onQueryModeChange={setQueryMode}
             queryBuilderConfig={queryBuilderConfig}
@@ -311,6 +336,7 @@ export default function CreateKPI() {
             metadata={metadata}
             signatures={signatures}
             sqlDefinition={optimizedSQL || sqlQuery || mockOptimizedSQL}
+            onCreateAnother={handleCreateAnother}
           />
         )}
       </main>

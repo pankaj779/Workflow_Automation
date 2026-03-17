@@ -32,34 +32,8 @@ def _ensure_https(host: str) -> str:
     return f"https://{h}"
 
 
-def create_genie_space(
-    table_identifier: str,
-    column_metadata: Dict[str, Dict],
-    warehouse_id: str,
-    host: str,
-    token: str,
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Create a Genie space dynamically for the selected table.
-
-    Args:
-        table_identifier: "catalog.schema.table" (no backticks)
-        column_metadata: {col_name: {"type": ..., "comment": ...}}
-        warehouse_id: SQL warehouse ID
-        host: Databricks host (e.g. https://xxx.cloud.databricks.com)
-        token: Databricks PAT token
-        title: Optional space title
-        description: Optional space description
-
-    Returns:
-        (space_id, error_message) - space_id is None on failure
-    """
-    base_url = _ensure_trailing_slash(_ensure_https(host))
-    url = f"{base_url}/api/2.0/genie/spaces"
-
-    # Build column_configs from column metadata
+def _build_table_config(table_identifier: str, column_metadata: Dict[str, Dict]) -> Dict:
+    """Build a single table config for Genie space."""
     col_names = sorted(column_metadata.keys())
     column_configs = []
     for col_name in col_names:
@@ -70,60 +44,102 @@ def create_genie_space(
             "column_name": col_name,
             "description": [comment] if comment else [],
         }
-        # Add format assistance for date/timestamp columns
         if col_type in ("timestamp", "date"):
             config["enable_format_assistance"] = True
         column_configs.append(config)
-
-    # Sort column_configs by column_name (API requirement)
     column_configs.sort(key=lambda x: x["column_name"])
-
-    # Build sample questions from column names
-    cols_sample = col_names[:5]  # First 5 columns for examples
-    sample_questions = [
-        {"id": _gen_id(), "question": [f"What are the distinct values in {table_identifier}?"]},
-        {"id": _gen_id(), "question": [f"Show me the first 10 rows from {table_identifier}"]},
-        {"id": _gen_id(), "question": [f"Summarize {table_identifier} by {cols_sample[0]}" if cols_sample else f"Count rows in {table_identifier}"]},
-    ]
-    sample_questions.sort(key=lambda x: x["id"])
-
-    # Build table config
-    table_config = {
+    return {
         "identifier": table_identifier,
-        "description": [description or f"Table {table_identifier} for KPI creation"],
+        "description": [f"Table {table_identifier} for KPI creation"],
         "column_configs": column_configs,
     }
 
-    # Build serialized_space JSON (version 2)
+
+def create_genie_space(
+    table_identifier: str,
+    column_metadata: Dict[str, Dict],
+    warehouse_id: str,
+    host: str,
+    token: str,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Create a Genie space for a single table. See create_genie_space_multi for multiple tables."""
+    return create_genie_space_multi(
+        tables=[(table_identifier, column_metadata)],
+        warehouse_id=warehouse_id,
+        host=host,
+        token=token,
+        title=title or f"KPI Space: {table_identifier}",
+        description=description or f"Dynamic Genie space for {table_identifier}",
+    )
+
+
+def create_genie_space_multi(
+    tables: List[Tuple[str, Dict[str, Dict]]],
+    warehouse_id: str,
+    host: str,
+    token: str,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Create a Genie space with multiple tables (from different schemas/catalogs).
+
+    Args:
+        tables: List of (table_identifier, column_metadata) e.g. [("cat.schema.t1", {...}), ("cat.schema2.t2", {...})]
+    """
+    if not tables:
+        return None, "No tables provided"
+    base_url = _ensure_trailing_slash(_ensure_https(host))
+    url = f"{base_url}/api/2.0/genie/spaces"
+
+    table_configs = []
+    all_identifiers = []
+    for table_identifier, column_metadata in tables:
+        tc = _build_table_config(table_identifier, column_metadata)
+        table_configs.append(tc)
+        all_identifiers.append(table_identifier)
+
+    table_list_str = ", ".join(all_identifiers)
+    sample_questions = [
+        {"id": _gen_id(), "question": [f"Show me the first 10 rows from {all_identifiers[0]}"]},
+        {"id": _gen_id(), "question": [f"Generate SQL using tables: {table_list_str}"]},
+    ]
+    sample_questions.sort(key=lambda x: x["id"])
+
+    multi_table_instruction = ""
+    if len(tables) > 1:
+        multi_table_instruction = (
+            "CRITICAL: When the user asks to ADD, COMBINE, or use values from MULTIPLE tables, "
+            "your SQL MUST include ALL tables listed above. Use subqueries, UNION ALL, or JOINs to combine data. "
+            "Never return SQL that uses only one table when the prompt clearly mentions multiple tables. "
+        )
+    instructions_text = (
+        f"Generate valid Databricks SQL for the tables: {table_list_str}. "
+        f"{multi_table_instruction}"
+        "Use three-part identifiers with backticks (e.g. `catalog`.`schema`.`table`). "
+        "Return only executable SQL. You may JOIN, UNION ALL, or combine data from multiple tables. "
+        "Include LIMIT when appropriate for exploratory queries."
+    )
+
     space_config = {
         "version": 2,
-        "config": {
-            "sample_questions": sample_questions,
-        },
-        "data_sources": {
-            "tables": [table_config],
-        },
+        "config": {"sample_questions": sample_questions},
+        "data_sources": {"tables": table_configs},
         "instructions": {
             "text_instructions": [
-                {
-                    "id": _gen_id(),
-                    "content": [
-                        f"Generate valid Databricks SQL for the table {table_identifier}. "
-                        "Use three-part identifiers with backticks. Return only executable SQL. "
-                        "Include LIMIT when appropriate for exploratory queries.",
-                    ],
-                }
-            ],
+                {"id": _gen_id(), "content": [instructions_text]},
+            ]
         },
     }
 
     serialized_space = json.dumps(space_config)
-
     payload = {
         "warehouse_id": warehouse_id,
         "serialized_space": serialized_space,
-        "title": title or f"KPI Space: {table_identifier}",
-        "description": description or f"Dynamic Genie space for {table_identifier}",
+        "title": title or f"KPI Space: {table_list_str[:80]}",
+        "description": description or f"Dynamic Genie space for {len(tables)} table(s)",
     }
 
     headers = {
@@ -326,9 +342,15 @@ def ask_genie(
     host: str,
     token: str,
     existing_space_id: Optional[str] = None,
+    tables: Optional[List[Tuple[str, Dict[str, Dict]]]] = None,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     High-level: Create space (if needed), ask Genie, return SQL.
+
+    Args:
+        table_identifier: Used when tables is None (single-table mode)
+        column_metadata: Used when tables is None
+        tables: Optional list of (table_identifier, column_metadata) for multi-table mode
 
     Returns:
         (space_id, sql, error_message)
@@ -336,13 +358,21 @@ def ask_genie(
     space_id = existing_space_id
 
     if not space_id:
-        space_id, create_err = create_genie_space(
-            table_identifier=table_identifier,
-            column_metadata=column_metadata,
-            warehouse_id=warehouse_id,
-            host=host,
-            token=token,
-        )
+        if tables and len(tables) > 0:
+            space_id, create_err = create_genie_space_multi(
+                tables=tables,
+                warehouse_id=warehouse_id,
+                host=host,
+                token=token,
+            )
+        else:
+            space_id, create_err = create_genie_space(
+                table_identifier=table_identifier,
+                column_metadata=column_metadata,
+                warehouse_id=warehouse_id,
+                host=host,
+                token=token,
+            )
         if create_err:
             return None, None, f"Failed to create Genie space: {create_err}"
 

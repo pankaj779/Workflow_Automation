@@ -96,23 +96,14 @@ export default function ReportsPage() {
 
   const handleDeleteReport = async (reportId: string, event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
-    // #region agent log
-    fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H9',location:'Reports.tsx:handleDeleteReport',message:'delete report clicked',data:{reportId},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     try {
       setDeletingReportId(reportId);
       await apiCall("deleteReport", {
         params: { reportId },
       });
-      // #region agent log
-      fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H10',location:'Reports.tsx:handleDeleteReport',message:'delete report api success',data:{reportId},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       toast.success("Report deleted");
       await loadData();
     } catch (e) {
-      // #region agent log
-      fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H10',location:'Reports.tsx:handleDeleteReport',message:'delete report api failed',data:{reportId,error:e instanceof Error ? e.message : 'unknown'},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       toast.error("Failed to delete report");
     } finally {
       setDeletingReportId(null);

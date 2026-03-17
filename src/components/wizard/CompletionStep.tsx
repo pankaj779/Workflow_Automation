@@ -25,9 +25,10 @@ interface CompletionStepProps {
   metadata: KPIMetadata;
   signatures: { metadata: string; lineage: string; semantic?: string | null };
   sqlDefinition: string;
+  onCreateAnother?: () => void;
 }
 
-export function CompletionStep({ metadata, signatures, sqlDefinition }: CompletionStepProps) {
+export function CompletionStep({ metadata, signatures, sqlDefinition, onCreateAnother }: CompletionStepProps) {
   const [showSQL, setShowSQL] = useState(false);
   const [copied, setCopied] = useState(false);
   const navigate = useNavigate();
@@ -142,7 +143,7 @@ export function CompletionStep({ metadata, signatures, sqlDefinition }: Completi
           Back to Dashboard
         </Button>
         <Button
-          onClick={() => navigate('/create-kpi')}
+          onClick={() => (onCreateAnother ? onCreateAnother() : navigate('/create-kpi'))}
           className="gap-2 gradient-primary hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
