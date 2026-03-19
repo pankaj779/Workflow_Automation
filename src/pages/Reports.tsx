@@ -1,5 +1,5 @@
 import { useEffect, useState, type MouseEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useUser } from "@/hooks/useUser";
 import { apiCall } from "@/lib/api-config";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,7 @@ interface Report {
 
 export default function ReportsPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user } = useUser();
   const [kpis, setKpis] = useState<KPI[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
@@ -62,6 +63,13 @@ export default function ReportsPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const preselectKpi = searchParams.get("preselectKpi");
+  useEffect(() => {
+    if (preselectKpi && kpis.some((k) => k.id === preselectKpi)) {
+      setSelectedKpiIds((prev) => (prev.includes(preselectKpi) ? prev : [...prev, preselectKpi]));
+    }
+  }, [preselectKpi, kpis]);
 
   const toggleKpi = (id: string) => {
     setSelectedKpiIds(prev =>

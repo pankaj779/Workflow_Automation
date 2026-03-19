@@ -4,7 +4,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Workflow, Plus, Search, RefreshCw, Sparkles, LayoutGrid, List, Star, Bell, FileBarChart, Snowflake, BarChart3, Shield, Trash2 } from "lucide-react";
+import { Workflow, Plus, Search, RefreshCw, Sparkles, LayoutGrid, List, Star, Bell, FileBarChart, Snowflake, Shield, Trash2 } from "lucide-react";
 import { DraftsDrawer } from "./DraftsDrawer";
 import { cn } from "@/lib/utils";
 import { useNavigate, useLocation } from "react-router-dom";
@@ -64,9 +64,6 @@ export function KPILibraryHeader({
 
   const loadNotifications = async () => {
     if (!user?.email) return;
-    // #region agent log
-    fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H7',location:'KPILibraryHeader.tsx:loadNotifications',message:'loading notifications for current user',data:{hasEmail:Boolean(user?.email)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     try {
       const rows = await apiCall<AppNotification[]>("listNotifications", {
         queryParams: { user_id: user.email },
@@ -78,9 +75,6 @@ export function KPILibraryHeader({
   };
 
   const markNotificationRead = async (notificationId: string) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H8',location:'KPILibraryHeader.tsx:markNotificationRead',message:'marking notification as read',data:{notificationId},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     try {
       await apiCall("markNotificationRead", {
         params: { notificationId },
@@ -93,9 +87,6 @@ export function KPILibraryHeader({
 
   const deleteNotification = async (notificationId: string, event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
-    // #region agent log
-    fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f798bc'},body:JSON.stringify({sessionId:'f798bc',runId:'post-fix',hypothesisId:'H12',location:'KPILibraryHeader.tsx:deleteNotification',message:'delete notification clicked',data:{notificationId},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     try {
       await apiCall("deleteNotification", {
         params: { notificationId },
@@ -116,7 +107,6 @@ export function KPILibraryHeader({
   const navItems = [
     { path: "/", label: "KPI Library", icon: LayoutGrid },
     { path: "/reports", label: "Reports", icon: FileBarChart },
-    { path: "/kpi-metrics", label: "KPI Metrics", icon: BarChart3 },
     { path: "/cold-storage", label: "Cold Storage", icon: Snowflake },
     ...(user?.isAdmin ? [{ path: "/admin", label: "Admin", icon: Shield }] : []),
   ];

@@ -29,7 +29,7 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 # Hard-code the OpenAI API key so Databricks Apps doesn’t need secrets.
-HARDCODED_OPENAI_KEY = "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"
+HARDCODED_OPENAI_KEY = "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"
 
 # Prefer OPENAI_API_KEY from .env (load_dotenv runs first). Add OPENAI_API_KEY to .env to use your own key.
 _env_path = os.path.join(os.path.dirname(__file__), ".env")
@@ -2172,19 +2172,35 @@ def get_kpi_metrics(kpi_id: str):
     except Exception:
         pass
 
+    report_names_list = []
     try:
         usage = fetch_all(
             f"""
-            SELECT COUNT(DISTINCT report_id) AS reports_using
-            FROM {table("report_kpis")}
-            WHERE kpi_id = ?
+            SELECT r.report_id, r.report_name
+            FROM {table("report_kpis")} rk
+            JOIN {table("reports")} r ON r.report_id = rk.report_id AND r.is_deleted = false
+            WHERE rk.kpi_id = ?
+            ORDER BY r.report_name
             """,
             (kpi_id,),
         )
         if usage:
-            reports_using = usage[0].get("reports_using") or 0
+            reports_using = len(usage)
+            report_names_list = [{"report_id": r["report_id"], "report_name": r["report_name"]} for r in usage]
     except Exception:
-        pass
+        try:
+            usage = fetch_all(
+                f"""
+                SELECT COUNT(DISTINCT report_id) AS reports_using
+                FROM {table("report_kpis")}
+                WHERE kpi_id = ?
+                """,
+                (kpi_id,),
+            )
+            if usage:
+                reports_using = usage[0].get("reports_using") or 0
+        except Exception:
+            pass
 
     usage_percentage = float(reports_using) / float(total_reports) * 100.0 if total_reports > 0 else 0.0
 
@@ -2199,6 +2215,7 @@ def get_kpi_metrics(kpi_id: str):
         "reports_using": reports_using,
         "total_reports": total_reports,
         "usage_percentage": usage_percentage,
+        "report_names": report_names_list,
     }
 
 

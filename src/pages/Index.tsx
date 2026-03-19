@@ -4,7 +4,6 @@ import { KPILibraryHeader } from "@/components/library/KPILibraryHeader";
 import { KPIStatsBar } from "@/components/library/KPIStatsBar";
 import { KPICategoryTabs } from "@/components/library/KPICategoryTabs";
 import { KPICard } from "@/components/library/KPICard";
-import { KPIDetailModal } from "@/components/library/KPIDetailModal";
 import { EmptySearchState } from "@/components/library/EmptySearchState";
 import { CardSkeleton } from "@/components/ui/skeleton-loader";
 import { mockKPILibraryStats, mockKPICategories, mockKPILibraryItems, mockDraftKPIs } from "@/lib/mock-data";
@@ -28,8 +27,6 @@ const Index = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid');
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
-  const [selectedKPI, setSelectedKPI] = useState<typeof mockKPILibraryItems[0] | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
   // const [stats] = useState(mockKPILibraryStats);
   // const [categories] = useState(mockKPICategories);
   // const [kpiItems, setKpiItems] = useState(mockKPILibraryItems);
@@ -96,13 +93,9 @@ const Index = () => {
       )
     );
 
-    if (selectedKPI?.id === kpiId) {
-      setSelectedKPI(prev => prev ? { ...prev, isFavorite: !prev.isFavorite } : null);
-    }
   };
   const handleCardClick = (kpi: typeof mockKPILibraryItems[0]) => {
-    setSelectedKPI(kpi);
-    setIsModalOpen(true);
+    navigate(`/kpis/${kpi.id}`);
   };
 
   const favoriteKPIs = useMemo(() => 
@@ -289,13 +282,6 @@ const Index = () => {
         )}
       </main>
 
-      {/* KPI Detail Modal */}
-      <KPIDetailModal
-        open={isModalOpen}
-        onOpenChange={setIsModalOpen}
-        kpi={selectedKPI}
-        onToggleFavorite={handleToggleFavorite}
-      />
     </div>
   );
 };

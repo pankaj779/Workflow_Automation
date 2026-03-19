@@ -36,6 +36,7 @@ export interface APIConfig {
     // Reports & Metrics
     getDashboardSummary: APIEndpoint;
     getKPIs: APIEndpoint;
+    getKPIDetail: APIEndpoint;
     getDrafts: APIEndpoint;
     toggleFavorite: APIEndpoint;
     getReports: APIEndpoint;
@@ -100,6 +101,11 @@ const configs: Record<string, APIConfig> = {
         url: '/kpis',
         method: 'GET',
         description: 'Get all KPIs',
+      },
+      getKPIDetail: {
+        url: '/kpis/:kpiId',
+        method: 'GET',
+        description: 'Get KPI detail by ID',
       },
 
       getDrafts: {
@@ -231,6 +237,7 @@ const configs: Record<string, APIConfig> = {
 
       getDashboardSummary: { url: '/dashboard/summary', method: 'GET', description: 'Get dashboard KPI summary' },
       getKPIs: { url: '/kpis', method: 'GET', description: 'Get all KPIs' },
+      getKPIDetail: { url: '/kpis/:kpiId', method: 'GET', description: 'Get KPI detail by ID' },
       getDrafts: { url: '/drafts', method: 'GET', description: 'Get user draft KPIs' },
       toggleFavorite: { url: '/kpis/:kpiId/favorite', method: 'POST', description: 'Toggle KPI favorite' },
       getReports: { url: '/reports', method: 'GET', description: 'List reports with their KPIs' },
