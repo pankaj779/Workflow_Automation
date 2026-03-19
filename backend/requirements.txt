@@ -5,5 +5,4 @@ databricks-sql-connector
 python-dotenv
 pydantic-settings
 databricks-sql-connector[pyarrow]
-openai
-sqlglot
+requests

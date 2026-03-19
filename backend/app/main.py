@@ -11,6 +11,11 @@ from databricks import sql
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from .genie_service import ask_genie
+from .databricks_ai import (
+    optimize_sql as databricks_optimize_sql,
+    semantic_signature as databricks_semantic_signature,
+    check_equivalent_to_any as fm_check_equivalent_to_any,
+)
 from typing import Union, Dict, Any
 from fastapi import Request, Body
 import hashlib
@@ -20,31 +25,23 @@ import random
 import string
 import re
 import threading
+import time
 
-
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
 
 # Hard-code the OpenAI API key so Databricks Apps doesn’t need secrets.
-HARDCODED_OPENAI_KEY = "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"
-
-# Prefer OPENAI_API_KEY from .env (load_dotenv runs first). Add OPENAI_API_KEY to .env to use your own key.
 _env_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=_env_path)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or HARDCODED_OPENAI_KEY
 
-if OPENAI_AVAILABLE and OPENAI_API_KEY:
-    openai_client = OpenAI(api_key=OPENAI_API_KEY)
-else:
-    openai_client = None
-
-
-# ==============================
-# Load ENV (already loaded above for OpenAI)
-# ==============================
+# #region agent log
+_DEBUG_LOG = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "debug-f798bc.log"))
+def _dbg(loc: str, msg: str, data: dict):
+    try:
+        line = json.dumps({"sessionId": "f798bc", "location": loc, "message": msg, "data": data, "timestamp": int(time.time() * 1000)}) + "\n"
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+# #endregion
 
 # ==============================
 # Databricks Config
@@ -52,37 +49,6 @@ else:
 DATABRICKS_SERVER_HOSTNAME = os.getenv("DB_HOST")
 DATABRICKS_HTTP_PATH = os.getenv("DB_HTTP_PATH")
 DATABRICKS_TOKEN = os.getenv("DB_TOKEN")
-
-# #region agent log
-import time as _time
-_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "debug-e56ee5.log")
-_DEBUG_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "debug-f798bc.log")
-def _dbg(loc, msg, data=None):
-    import json as _j
-    try:
-        with open(_LOG_FILE, "a") as _f:
-            _f.write(_j.dumps({"sessionId":"e56ee5","location":loc,"message":msg,"data":data or {},"timestamp":int(_time.time()*1000)})+"\n")
-    except: pass
-
-
-def _agent_dbg(location: str, message: str, data=None, run_id: str = "pre-fix", hypothesis_id: str = "H1"):
-    import json as _j
-    payload = {
-        "sessionId": "f798bc",
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data or {},
-        "timestamp": int(_time.time() * 1000),
-    }
-    try:
-        with open(_DEBUG_LOG_FILE, "a", encoding="utf-8") as _f:
-            _f.write(_j.dumps(payload) + "\n")
-    except Exception:
-        pass
-_dbg("main.py:startup", "env_loaded", {"env_path": _env_path, "env_exists": os.path.exists(_env_path), "DB_HOST": DATABRICKS_SERVER_HOSTNAME, "DB_HTTP_PATH": DATABRICKS_HTTP_PATH, "DB_TOKEN_set": bool(DATABRICKS_TOKEN), "cwd": os.getcwd()})
-# #endregion
 
 # 👉 Unity Catalog settings
 DB_CATALOG = "poc_workspace"
@@ -255,9 +221,8 @@ def _ensure_supporting_tables():
         except Exception:
             try:
                 execute(f"CREATE TABLE IF NOT EXISTS {fq} ({ddl})")
-                _dbg("main.py:startup", "created_table", {"table": fq})
-            except Exception as e:
-                _dbg("main.py:startup", "create_table_failed", {"table": fq, "error": str(e)})
+            except Exception:
+                pass
 
     _backfill_semantic_signatures()
     _start_cold_storage_scheduler()
@@ -276,13 +241,9 @@ def _backfill_semantic_signatures():
                     f"UPDATE {table('kpi_master')} SET semantic_signature = ? WHERE kpi_id = ?",
                     (new_sig, row["kpi_id"]),
                 )
-        # #region agent log
-        _dbg("main.py:_backfill_semantic_signatures", "done", {"count": len(rows)})
-        # #endregion
-    except Exception as e:
-        # #region agent log
-        _dbg("main.py:_backfill_semantic_signatures", "error", {"error": str(e)})
-        # #endregion
+
+    except Exception:
+        pass
 
 
 @app.get("/me")
@@ -296,32 +257,15 @@ def get_current_user(request: Request):
     }
 
 
-@app.get("/health/openai")
-def health_openai():
+@app.get("/health/databricks-ai")
+def health_databricks_ai():
     """
-    Test if OpenAI API is reachable and API key is valid.
+    Test if Databricks Foundation Models are reachable.
     Returns: { "ok": bool, "message": str }
     """
-    if not openai_client:
-        return {"ok": False, "message": "OpenAI client not configured (missing import or API key)"}
-    try:
-        openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": "Say OK"}],
-            max_tokens=5,
-        )
-        return {"ok": True, "message": "OpenAI API is reachable and API key is valid"}
-    except Exception as e:
-        err = str(e).lower()
-        if "invalid" in err or "api_key" in err or "authentication" in err:
-            msg = "Invalid or expired OpenAI API key"
-        elif "rate" in err or "limit" in err:
-            msg = "OpenAI rate limit exceeded"
-        elif "connection" in err or "timeout" in err:
-            msg = "OpenAI connection failed (network/timeout)"
-        else:
-            msg = f"OpenAI error: {str(e)[:80]}"
-        return {"ok": False, "message": msg}
+    from .databricks_ai import test_fm_connection
+    ok, msg = test_fm_connection()
+    return {"ok": ok, "message": msg}
 
 
 # ==============================
@@ -594,104 +538,13 @@ class AdminActionRequest(BaseModel):
 # Signature + Duplicate Helpers
 # ==============================
 
-def _flatten_simple_cte(s: str) -> str:
-    m = re.search(
-        r"with\s+(\w+)\s+as\s*\(\s*select\s+(.+?)\s+from\s+(\S+)\s+where\s+(.+?)\s*\)\s*select\s+",
-        s,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if not m:
-        return s
-
-    cte_name, inner_table, inner_where = m.group(1), m.group(3), m.group(4)
-    inner_where = " ".join(inner_where.split())
-
-    rest = s[m.end():]
-    rest = re.sub(
-        r"\bfrom\s+" + re.escape(cte_name) + r"\b",
-        " from " + inner_table + " where " + inner_where,
-        rest,
-        count=1,
-    )
-    return "select " + rest.strip()
-
-_SQL_KEYWORDS = frozenset("""
-    select from where and or not in exists between like is null true false
-    case when then else end as on join inner left right outer cross full
-    group by order having limit offset union all distinct asc desc into
-    values set update delete insert create alter drop table index view
-    if replace with recursive current_date current_timestamp _str_ _num_
-""".split())
-
-
-def _extract_sql_skeleton(sql_text: str) -> str:
-    """
-    Extract a semantic skeleton from SQL that is invariant across
-    optimizer rewrites. Only keeps:
-      - Dot-notation references (table.column, schema.table, etc.)
-      - Non-keyword bare identifiers (column/table names)
-      - Aggregate functions used
-    Does NOT include SQL clause types (SELECT, GROUP BY, etc.) since
-    optimizers freely add/remove these.
-    """
-    import re
-
-    if not sql_text or not sql_text.strip():
-        return ""
-
-    s = sql_text.strip()
-    s = re.sub(r'--[^\n]*', ' ', s)
-    s = re.sub(r'/\*.*?\*/', ' ', s, flags=re.DOTALL)
-    s = s.lower()
-    s = " ".join(s.split())
-
-    s = re.sub(r"'[^']*'", " _STR_ ", s)
-    s = re.sub(r'"[^"]*"', " _STR_ ", s)
-    s = re.sub(r'\b\d+(\.\d+)?\b', ' _NUM_ ', s)
-    s = re.sub(r'\bas\s+[a-z_][a-z0-9_]*', ' ', s)
-
-    dot_refs = sorted(set(re.findall(r'[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)+', s)))
-
-    all_idents = set(re.findall(r'[a-z_][a-z0-9_]*', s))
-    bare_idents = sorted(all_idents - _SQL_KEYWORDS)
-
-    agg_funcs = sorted(set(re.findall(r'\b(sum|count|avg|min|max|stddev|variance)\b', s)))
-
-    skeleton = ",".join(agg_funcs) + "||" + ",".join(dot_refs) + "||" + ",".join(bare_idents)
-    return skeleton
-
-
-def _normalize_prompt_for_signature(prompt: str) -> str:
-    """Normalize prompt for consistent semantic hashing. Preserves intent, removes noise."""
-    if not prompt or not prompt.strip():
-        return ""
-    t = prompt.strip().lower()
-    t = re.sub(r"\s+", " ", t)
-    return t.strip()
-
 
 def generate_semantic_signature(sql_query: str, prompt: Optional[str] = None) -> str:
     """
-    Best-in-class semantic signature for duplicate detection.
-    Uses logical essence (tables, columns, filters, partitions) so equivalent queries
-    (e.g. correlated subquery vs CTE+ROW_NUMBER, optimized vs original) produce the same signature.
-    IMPORTANT: Uses SQL-only essence (prompt is ignored) so that duplicate detection
-    matches on logical equivalence regardless of how the query was created or optimized.
+    Semantic signature for duplicate detection using Databricks Foundation Model.
+    Equivalent SQL produces the same signature. Prompt is ignored (SQL-only).
     """
-    from .semantic_sql import extract_logical_essence, normalize_sql_for_essence
-
-    sql_part = ""
-    if sql_query and sql_query.strip():
-        essence = extract_logical_essence(sql_query)
-        sql_part = essence if essence else normalize_sql_for_essence(sql_query)
-
-    if not sql_part:
-        return ""
-
-    combined = "s:" + sql_part
-    sig = hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
-    _dbg("main.py:generate_semantic_signature", "combined", {"sql_len": len(sql_part), "sig": sig})
-    return sig
+    return databricks_semantic_signature(sql_query or "")
     
 def generate_kpi_id():
     code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
@@ -712,10 +565,16 @@ def generate_lineage_signature(source_table: str, columns: list[str]) -> str:
     return "lin_" + hashlib.sha256(lineage_str.encode()).hexdigest()[:10]
 
 
-def check_duplicate_kpi(metadata_signature: str, semantic_signature: str):
+def check_duplicate_kpi(
+    metadata_signature: str,
+    semantic_signature: str,
+    new_sql: Optional[str] = None,
+    lineage_signature: Optional[str] = None,
+    extracted_table: Optional[str] = None,
+):
     """
-    Returns list of duplicates with kpi_name, and which signature matched.
-    Each item: {"kpi_name": str, "matched_signature_type": "metadata"|"semantic", "matched_signature": str}
+    Returns list of duplicates. Checks: 1) metadata_sig 2) semantic_sig 3) FM pairwise (lineage + table fallback).
+    Each item: {"kpi_name": str, "matched_signature_type": "metadata"|"semantic"|"fm_equivalent", "matched_signature": str}
     """
     try:
         seen = set()
@@ -738,14 +597,63 @@ def check_duplicate_kpi(metadata_signature: str, semantic_signature: str):
             if k not in seen:
                 seen.add(k)
                 result.append({"kpi_name": k, "matched_signature_type": "semantic", "matched_signature": semantic_signature})
-        # #region agent log
-        _dbg("main.py:check_duplicate_kpi", "result", {"metadata_sig": metadata_signature, "semantic_sig": semantic_signature, "duplicates_found": len(result)})
-        # #endregion
+
+        if not result and new_sql:
+            dupes = _check_duplicate_via_fm(new_sql, lineage_signature, extracted_table)
+            for d in dupes:
+                if d["kpi_name"] not in seen:
+                    seen.add(d["kpi_name"])
+                    result.append(d)
         return result
-    except Exception as e:
+    except Exception:
+        return []
+
+
+def _check_duplicate_via_fm(
+    new_sql: str,
+    lineage_signature: Optional[str],
+    extracted_table: Optional[str] = None,
+) -> list[dict]:
+    """
+    FM pairwise equivalence: fetch candidates by lineage (or by table when lineage yields none).
+    Research: "Explain & Compare" - LLM pairwise is more reliable than canonical hash for equivalence.
+    """
+    try:
+        rows = []
+        from_lineage = False
+        if lineage_signature:
+            rows = fetch_all(
+                f"""
+                SELECT kpi_name, sql_definition FROM {table("kpi_master")}
+                WHERE lineage_signature = ? AND is_deleted = false AND sql_definition IS NOT NULL
+                """,
+                (lineage_signature,),
+            )
+            from_lineage = bool(rows)
+        if not rows and extracted_table:
+            table_pattern = f"%{extracted_table}%"
+            rows = fetch_all(
+                f"""
+                SELECT kpi_name, sql_definition FROM {table("kpi_master")}
+                WHERE is_deleted = false AND sql_definition IS NOT NULL
+                AND sql_definition LIKE ?
+                """,
+                (table_pattern,),
+            )
+        if not rows:
+            return []
+        candidates = [r["sql_definition"] for r in rows if r.get("sql_definition")]
+        if not candidates:
+            return []
+        equiv_indices = fm_check_equivalent_to_any(new_sql, candidates)
         # #region agent log
-        _dbg("main.py:check_duplicate_kpi", "error", {"error": str(e), "type": type(e).__name__})
+        _dbg("_check_duplicate_via_fm", "fm_pairwise", {"candidates": len(candidates), "equiv_indices": equiv_indices, "from_lineage": from_lineage, "from_table_fallback": not from_lineage})
         # #endregion
+        return [
+            {"kpi_name": rows[i]["kpi_name"], "matched_signature_type": "fm_equivalent", "matched_signature": "semantic"}
+            for i in equiv_indices
+        ]
+    except Exception:
         return []
 
 def run_sql_query(sql_text: str, limit: int = 100):
@@ -763,101 +671,6 @@ def run_sql_query(sql_text: str, limit: int = 100):
         "columns": list(rows[0].keys()),
         "rows": rows,
     }
-
-def _sqlglot_format(sql_text: str) -> str:
-    """Use sqlglot to format SQL (proper indentation, consistent spacing)."""
-    try:
-        import sqlglot
-        parsed = sqlglot.parse_one(sql_text.strip())
-        return parsed.sql(dialect="databricks", pretty=True)
-    except Exception:
-        return " ".join(sql_text.strip().split())
-
-
-def optimize_sql(sql_text: str) -> str:
-    """
-    Format and normalize SQL using sqlglot when available; fallback to whitespace join.
-    """
-    return _sqlglot_format(sql_text)
-
-
-def openai_with_optimize(sql_text: str, user_prompt: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Use OpenAI to optimize SQL. Returns {optimized_sql, optimization_score (0-100), changes_made: [...]}.
-    """
-    user_context = ""
-    if user_prompt:
-        user_context = f"""
-USER'S INTENT (MUST apply): {json.dumps(user_prompt)}
-- "Give first 2 rows" -> ADD LIMIT 2; "last week" -> add date filter; etc."""
-    else:
-        user_context = """
-You MUST make STRUCTURAL optimizations, not just formatting. Consider:
-1. FIX BUGS: typos (kpt->kpi, tz->t2), wrong table aliases, invalid references
-2. REWRITE: correlated subqueries -> JOINs/CTEs; redundant predicates removal
-3. ADD: LIMIT for preview queries if missing; predicate pushdown
-4. IMPROVE: combine AND conditions; use EXISTS instead of IN when beneficial
-Formatting alone = 0 score. At least one structural change required."""
-    prompt = f"""You are a Databricks SQL optimizer. OPTIMIZE the query structurally, not just format it.
-
-Query:
-{json.dumps(sql_text)}
-
-{user_context}
-
-Return ONLY valid JSON with this exact structure:
-{{"optimized_query": "<SQL string>", "optimization_score": <0-100>, "changes_made": ["change1", "change2", ...]}}
-
-Score guide: 0=format only, 20=typo fix, 40=minor rewrite, 60=subquery→JOIN, 80=major restructure, 100=best practice rewrite.
-changes_made: list what you did (e.g. "Fixed typo kpt_value->kpi_value", "Converted subquery to JOIN")."""
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Produce only valid JSON. No markdown, no explanation."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.2,
-            max_tokens=1200
-        )
-        content = response.choices[0].message.content.strip()
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        content = content.strip()
-        if content.endswith("```"):
-            content = content[:-3].strip()
-        result = json.loads(content)
-        optimized = result.get("optimized_query", "").strip()
-        if not optimized:
-            raise ValueError("Missing optimized_query")
-        score = result.get("optimization_score")
-        if not isinstance(score, (int, float)):
-            score = 50
-        score = max(0, min(100, int(score)))
-        changes = result.get("changes_made")
-        if not isinstance(changes, list):
-            changes = ["Optimization applied"] if score > 0 else ["Formatting only"]
-        return {
-            "optimized_sql": optimized,
-            "optimization_score": score,
-            "changes_made": changes[:10],
-        }
-    except Exception as ex:
-        err_msg = str(ex).lower()
-        if "invalid" in err_msg or "api_key" in err_msg or "authentication" in err_msg:
-            hint = "Invalid or expired OpenAI API key — check /health/openai"
-        elif "rate" in err_msg or "limit" in err_msg:
-            hint = "OpenAI rate limit exceeded"
-        else:
-            hint = "OpenAI unavailable or failed — check /health/openai for details"
-        fallback = optimize_sql(sql_text)
-        return {
-            "optimized_sql": fallback,
-            "optimization_score": 0,
-            "changes_made": [f"Format only — {hint}"],
-        }
 
 def get_tables_with_columns(schema: str):
     """
@@ -1038,9 +851,7 @@ def _ensure_kpi_values(fully_qualified: str) -> None:
     except Exception:
         try:
             execute(f"CREATE TABLE IF NOT EXISTS {fully_qualified} ({_KPI_VALUES_DDL.strip()})")
-            _dbg("main.py:_ensure_kpi_values", "created_table", {"table": fully_qualified})
         except Exception as e:
-            _dbg("main.py:_ensure_kpi_values", "create_failed", {"table": fully_qualified, "error": str(e)})
             raise
 
 
@@ -1424,10 +1235,7 @@ def list_reports(include_deleted: bool = False):
             """
         )
         return [_load_report_with_kpis(r) for r in rows]
-    except Exception as e:
-        # #region agent log
-        _dbg("main.py:list_reports", "error", {"error": str(e)})
-        # #endregion
+    except Exception:
         return []
 
 
@@ -1627,19 +1435,10 @@ def list_catalogs():
     """
     List all available Unity Catalog catalogs.
     """
-    # #region agent log
-    _dbg("main.py:list_catalogs", "called", {"DB_HOST": DATABRICKS_SERVER_HOSTNAME, "DB_HTTP_PATH": DATABRICKS_HTTP_PATH, "DB_TOKEN_set": bool(DATABRICKS_TOKEN)})
-    # #endregion
     try:
         rows = fetch_all("SHOW CATALOGS")
-        # #region agent log
-        _dbg("main.py:list_catalogs", "success", {"row_count": len(rows), "sample": rows[:2] if rows else []})
-        # #endregion
         return [CatalogItem(name=r.get("catalog") or r.get("catalog_name")) for r in rows]
     except Exception as e:
-        # #region agent log
-        _dbg("main.py:list_catalogs", "error", {"error": str(e), "error_type": type(e).__name__})
-        # #endregion
         raise HTTPException(status_code=500, detail=f"SHOW CATALOGS failed: {e}")
 
 
@@ -1729,6 +1528,50 @@ def preview_table(schema: str, table: str, catalog: Optional[str] = None):
     except Exception as e:
         return {"columns": [], "rows": []}
 
+def _extract_table_from_sql(sql: str) -> Optional[str]:
+    """Extract first fully-qualified table (catalog.schema.table) from SQL."""
+    m = re.search(r"\bFROM\s+([a-zA-Z0-9_.`]+)(?:\s+[aA][sS]\s+\w+)?", sql, re.IGNORECASE)
+    if m:
+        t = m.group(1).strip().strip("`")
+        if "." in t and len(t) > 5:
+            return t
+    m = re.search(r"\bJOIN\s+([a-zA-Z0-9_.`]+)(?:\s+[aA][sS]\s+\w+)?", sql, re.IGNORECASE)
+    if m:
+        t = m.group(1).strip().strip("`")
+        if "." in t and len(t) > 5:
+            return t
+    return None
+
+
+def _extract_columns_from_sql(sql: str) -> list[str]:
+    """Extract FINAL output column names from outer SELECT. Normalize alias.column -> column for lineage."""
+    # Use last SELECT (outer query) when CTEs present
+    parts = re.split(r"\bSELECT\s+", sql, flags=re.IGNORECASE)
+    if len(parts) < 2:
+        return []
+    sel = parts[-1].strip()
+    from_match = re.search(r"\s+FROM\s+", sel, re.IGNORECASE)
+    if from_match:
+        sel = sel[: from_match.start()].strip()
+    cols = []
+    for part in re.split(r"\s*,\s*", sel):
+        part = part.strip()
+        if not part or part.upper().startswith(("DISTINCT", "ALL")):
+            continue
+        m_as = re.search(r"\bAS\s+([a-zA-Z0-9_]+)\s*$", part, re.IGNORECASE)
+        if m_as:
+            cols.append(m_as.group(1).strip())
+        else:
+            m_col = re.search(r"([a-zA-Z0-9_.`]+)\s*$", part)
+            if m_col:
+                c = m_col.group(1).strip().strip("`")
+                # Normalize t.brand -> brand for lineage consistency
+                if "." in c:
+                    c = c.split(".")[-1]
+                cols.append(c)
+    return [c for c in cols if c and len(c) < 128]
+
+
 @app.post("/query/optimize")
 def optimize_query(
     request: Request,
@@ -1737,17 +1580,15 @@ def optimize_query(
     """
     Accept RAW SQL in body. Optional ?prompt=... query param for user intent.
     Returns: optimized_sql, optimization_score (0-100), changes_made (list of changes).
+    Uses Databricks FM; falls back to Genie when FM is unavailable.
     """
     try:
         user_prompt = request.query_params.get("prompt", "").strip() or None
-        if not openai_client:
-            formatted = optimize_sql(sql)
-            return {
-                "optimized_sql": formatted,
-                "optimization_score": 0,
-                "changes_made": ["Format only — OpenAI not configured"],
-            }
-        result = openai_with_optimize(sql, user_prompt=user_prompt)
+        result = databricks_optimize_sql(sql, user_prompt=user_prompt)
+        if result["optimization_score"] == 0 and any("FM unavailable" in c for c in result["changes_made"]):
+            genie_result = _optimize_via_genie(sql, user_prompt)
+            if genie_result:
+                return genie_result
         return {
             "optimized_sql": result["optimized_sql"],
             "optimization_score": result["optimization_score"],
@@ -1755,6 +1596,41 @@ def optimize_query(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _optimize_via_genie(sql: str, user_prompt: Optional[str]) -> Optional[dict]:
+    """Fallback: use Genie to optimize SQL when FM is unavailable."""
+    table_id = _extract_table_from_sql(sql) or f"{DB_CATALOG}.{DB_SCHEMA}.repatha_final_merged"
+    warehouse_id = (DATABRICKS_HTTP_PATH or "").split("/")[-1]
+    if not warehouse_id or not DATABRICKS_SERVER_HOSTNAME or not DATABRICKS_TOKEN:
+        return None
+    try:
+        col_meta = _get_table_column_metadata(table_id)
+    except Exception:
+        col_meta = {}
+    if not col_meta:
+        return None
+    prompt = f"""Optimize this SQL structurally. Fix bugs, convert correlated subqueries to JOINs, add predicate pushdown. Return ONLY the optimized SQL, no explanation.
+
+SQL:
+{sql}"""
+    if user_prompt:
+        prompt += f"\n\nUser intent: {user_prompt}"
+    space_id, optimized_sql, err = ask_genie(
+        table_identifier=table_id,
+        column_metadata=col_meta,
+        prompt=prompt,
+        warehouse_id=warehouse_id,
+        host=DATABRICKS_SERVER_HOSTNAME,
+        token=DATABRICKS_TOKEN,
+    )
+    if err or not optimized_sql:
+        return None
+    return {
+        "optimized_sql": optimized_sql.strip().rstrip(";").strip(),
+        "optimization_score": 60,
+        "changes_made": ["Optimized via Genie (FM unavailable)"],
+    }
     
 def _get_table_column_metadata(table_identifier: str) -> Dict[str, Dict]:
     """Fetch column metadata for a table via DESCRIBE."""
@@ -1775,18 +1651,6 @@ def generate_sql_with_genie(req: GenieQueryRequest):
     Generate SQL using Databricks Genie. Supports single or multiple tables from different schemas.
     Use table_identifiers for full catalog.schema.table (e.g. ["poc_workspace.gold_plus_datamart.t1", "poc_workspace.default.t2"]).
     """
-    # #region agent log
-    try:
-        _agent_dbg(
-            "main.py:genie:request",
-            "genie request received",
-            {"prompt_len": len(req.prompt or ""), "table": req.table, "table_identifiers": req.table_identifiers},
-            run_id="genie-debug",
-            hypothesis_id="H1",
-        )
-    except Exception:
-        pass
-    # #endregion
     try:
         tables_for_genie = []
         if req.table_identifiers and len(req.table_identifiers) > 0:
@@ -1832,22 +1696,10 @@ def generate_sql_with_genie(req: GenieQueryRequest):
         return {"sql": sql_text, "space_id": space_id}
 
     except ValueError as e:
-        # #region agent log
-        try:
-            _agent_dbg("main.py:genie:value_error", "genie ValueError", {"error": str(e)}, run_id="genie-debug", hypothesis_id="H2")
-        except Exception:
-            pass
-        # #endregion
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        # #region agent log
-        try:
-            _agent_dbg("main.py:genie:exception", "genie Exception", {"error": str(e), "type": type(e).__name__}, run_id="genie-debug", hypothesis_id="H3")
-        except Exception:
-            pass
-        # #endregion
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/query/run")
@@ -1889,19 +1741,30 @@ def execute_query(req: ExecuteQueryRequest):
 @app.post("/kpi/query-preparation")
 def query_preparation(req: QueryPreparationRequest):
     try:
+        # --- Prefer SQL-derived lineage (frontend can send wrong table/cols when switching original↔optimized) ---
+        sql_table = _extract_table_from_sql(req.sql)
+        sql_cols = _extract_columns_from_sql(req.sql)
+        source_table = sql_table or req.source_table or "unknown"
+        columns = sql_cols if sql_cols else (req.columns or [])
+        # #region agent log
+        _dbg("query_preparation", "lineage_derived", {"source_table": source_table, "columns": columns[:10], "from_sql_table": bool(sql_table), "from_sql_cols": bool(sql_cols)})
+        # #endregion
+
         # --- Generate signatures ---
         metadata_sig = generate_metadata_signature(req.sql)
         semantic_sig = generate_semantic_signature(req.sql, prompt=req.prompt)
-        lineage_sig = generate_lineage_signature(
-            req.source_table or "unknown",
-            req.columns or [],
+        lineage_sig = generate_lineage_signature(source_table, columns)
+
+        # --- Duplicate detection (metadata + semantic + FM pairwise fallback) ---
+        duplicates = check_duplicate_kpi(
+            metadata_sig, semantic_sig,
+            new_sql=req.sql,
+            lineage_signature=lineage_sig,
+            extracted_table=source_table if source_table != "unknown" else None,
         )
         # #region agent log
-        _dbg("main.py:query_preparation", "signatures", {"metadata_sig": metadata_sig, "semantic_sig": semantic_sig, "lineage_sig": lineage_sig, "sql_first100": req.sql[:100] if req.sql else ""})
+        _dbg("query_preparation", "duplicate_check", {"duplicate": bool(duplicates), "count": len(duplicates), "matched_type": duplicates[0]["matched_signature_type"] if duplicates else None})
         # #endregion
-
-        # --- Duplicate detection ---
-        duplicates = check_duplicate_kpi(metadata_sig, semantic_sig)
 
         if duplicates:
             first = duplicates[0]
@@ -2042,9 +1905,6 @@ def publish_final_kpi(req: PublishKPIRequest):
     try:
         kpi_id = generate_kpi_id()
         now = datetime.utcnow()
-        # #region agent log
-        _dbg("main.py:publish_final_kpi", "called", {"kpi_id": kpi_id, "kpi_name": req.kpi_name, "target_table": table("kpi_master")})
-        # #endregion
 
         # -----------------------------
         # Ensure kpi_master table exists + get columns, then INSERT
@@ -2082,9 +1942,6 @@ def publish_final_kpi(req: PublishKPIRequest):
         }
 
         insert_cols = [c for c in value_map if c.lower() in actual_cols_lower]
-        # #region agent log
-        _dbg("main.py:publish_final_kpi", "inserting", {"kpi_id": kpi_id, "actual_cols": actual_cols, "insert_cols": insert_cols})
-        # #endregion
         if not insert_cols:
             raise HTTPException(status_code=500, detail=f"kpi_master has columns {actual_cols} but none match expected columns")
 
@@ -2114,8 +1971,8 @@ def publish_final_kpi(req: PublishKPIRequest):
                     (kpi_id, now, json.dumps(row, default=decimal_serializer)),
                 )
             rows_inserted = len(result["rows"])
-        except Exception as ex:
-            _dbg("main.py:publish_final_kpi", "kpi_values_insert_failed", {"error": str(ex)})
+        except Exception:
+            pass
 
         return {
             "kpi_id": kpi_id,
@@ -2124,9 +1981,6 @@ def publish_final_kpi(req: PublishKPIRequest):
         }
 
     except Exception as e:
-        # #region agent log
-        _dbg("main.py:publish_final_kpi", "ERROR", {"error": str(e), "type": type(e).__name__})
-        # #endregion
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2307,15 +2161,6 @@ def mark_notification_read(notification_id: str):
 
 @app.delete("/notifications/{notification_id}")
 def delete_notification(notification_id: str, user_id: Optional[str] = None):
-    # #region agent log
-    _agent_dbg(
-        "main.py:delete_notification:entry",
-        "delete notification requested",
-        {"notification_id": notification_id, "has_user_id": bool(user_id)},
-        run_id="post-fix",
-        hypothesis_id="H11",
-    )
-    # #endregion
     try:
         if user_id:
             execute(
@@ -2333,26 +2178,8 @@ def delete_notification(notification_id: str, user_id: Optional[str] = None):
                 """,
                 (notification_id,),
             )
-        # #region agent log
-        _agent_dbg(
-            "main.py:delete_notification:success",
-            "notification deleted",
-            {"notification_id": notification_id},
-            run_id="post-fix",
-            hypothesis_id="H11",
-        )
-        # #endregion
         return {"message": "Notification deleted"}
     except Exception as ex:
-        # #region agent log
-        _agent_dbg(
-            "main.py:delete_notification:error",
-            "notification delete failed",
-            {"notification_id": notification_id, "error": str(ex)},
-            run_id="post-fix",
-            hypothesis_id="H11",
-        )
-        # #endregion
         raise
 
 
@@ -2361,23 +2188,6 @@ def _run_cold_storage_core(config: ColdStorageRunConfig, run_source: str = "manu
     One-shot execution of cold storage logic.
     Requires admin role when ADMIN_EMAILS is configured. Scheduler may use admin token.
     """
-    # #region agent log
-    _agent_dbg(
-        "main.py:run_cold_storage:entry",
-        "cold storage run request received",
-        {
-            "inactive_days_to_cold": config.inactive_days_to_cold,
-            "cold_days_to_decision": config.cold_days_to_decision,
-            "inactive_minutes_to_cold": config.inactive_minutes_to_cold,
-            "cold_minutes_to_decision": config.cold_minutes_to_decision,
-            "reminder_minutes_interval": config.reminder_minutes_interval,
-            "run_source": run_source,
-        },
-        run_id="post-fix",
-        hypothesis_id="H1",
-    )
-    # #endregion
-
     # Build dynamic windows: minute-based values override day-based values (for testing).
     inactive_cutoff_expr = (
         f"from_unixtime(unix_timestamp() - {int(config.inactive_minutes_to_cold) * 60})"
@@ -2401,21 +2211,6 @@ def _run_cold_storage_core(config: ColdStorageRunConfig, run_source: str = "manu
         if owner_response_minutes and int(owner_response_minutes) > 0
         else f"date_sub(current_timestamp(), {owner_response_days})"
     )
-
-    # #region agent log
-    _agent_dbg(
-        "main.py:run_cold_storage:computed-windows",
-        "computed cold storage timing windows",
-        {
-            "inactive_cutoff_expr": inactive_cutoff_expr,
-            "decision_cutoff_expr": decision_cutoff_expr,
-            "reminder_interval_seconds": reminder_interval_seconds,
-            "mode": "minutes" if config.inactive_minutes_to_cold or config.cold_minutes_to_decision else "days",
-        },
-        run_id="post-fix",
-        hypothesis_id="H5",
-    )
-    # #endregion
 
     # 1) Move inactive KPIs to cold storage
     inactive_sql = f"""
@@ -2490,15 +2285,6 @@ def _run_cold_storage_core(config: ColdStorageRunConfig, run_source: str = "manu
         _insert_notification(owner_id, "owner", "owner_choice", title, body, related_kpi_id=k["kpi_id"], related_id=decision_id)
 
     # 3) Send reminders (every 6h) to owners with open decisions
-    # #region agent log
-    _agent_dbg(
-        "main.py:run_cold_storage:reminder-window",
-        "using fixed reminder interval window",
-        {"interval_seconds": reminder_interval_seconds, "interval_minutes": int(reminder_interval_seconds / 60)},
-        run_id="post-fix",
-        hypothesis_id="H2",
-    )
-    # #endregion
     reminders_sql = f"""
         SELECT d.decision_id, d.kpi_id, d.requested_by
         FROM {table("cold_storage_decisions")} d
@@ -2572,21 +2358,6 @@ def _run_cold_storage_core(config: ColdStorageRunConfig, run_source: str = "manu
         _notify_admins("owner_no_response", title, body, related_kpi_id=kpi_id, related_id=decision_id)
         admin_notified_count += 1
 
-    # #region agent log
-    _agent_dbg(
-        "main.py:run_cold_storage:result",
-        "cold storage run result",
-        {
-            "moved_to_cold": len(to_cold),
-            "pending_decisions_created": len(needing_decision),
-            "reminders_sent": reminder_count,
-            "admin_notified_no_response": admin_notified_count,
-            "mode": "minutes" if config.inactive_minutes_to_cold or config.cold_minutes_to_decision else "days",
-        },
-        run_id="post-fix",
-        hypothesis_id="H4",
-    )
-    # #endregion
     return {
         "moved_to_cold": len(to_cold),
         "pending_decisions_created": len(needing_decision),
@@ -2609,36 +2380,13 @@ def _build_auto_cold_storage_config() -> ColdStorageRunConfig:
 
 
 def _cold_storage_scheduler_loop():
-    # #region agent log
-    _agent_dbg(
-        "main.py:cold_storage_scheduler:start",
-        "cold storage scheduler started",
-        {
-            "loop_seconds": COLD_STORAGE_LOOP_SECONDS,
-            "auto_enabled": COLD_STORAGE_AUTO_ENABLED,
-            "inactive_minutes": COLD_STORAGE_INACTIVE_MINUTES,
-            "decision_minutes": COLD_STORAGE_DECISION_MINUTES,
-            "reminder_minutes": COLD_STORAGE_REMINDER_MINUTES,
-        },
-        run_id="post-fix",
-        hypothesis_id="H13",
-    )
-    # #endregion
     while True:
         try:
             cfg = _build_auto_cold_storage_config()
             _run_cold_storage_core(cfg, run_source="scheduler")
-        except Exception as ex:
-            # #region agent log
-            _agent_dbg(
-                "main.py:cold_storage_scheduler:error",
-                "cold storage scheduler iteration failed",
-                {"error": str(ex)},
-                run_id="post-fix",
-                hypothesis_id="H13",
-            )
-            # #endregion
-        _time.sleep(max(10, COLD_STORAGE_LOOP_SECONDS))
+        except Exception:
+            pass
+        time.sleep(max(10, COLD_STORAGE_LOOP_SECONDS))
 
 
 def _start_cold_storage_scheduler():
@@ -2655,16 +2403,7 @@ def run_cold_storage(config: ColdStorageRunConfig, request: Request):
     """
     Manual trigger for cold storage run (optional). Core flow runs automatically via scheduler.
     """
-    current_user = _get_current_user_email(request)
-    # #region agent log
-    _agent_dbg(
-        "main.py:run_cold_storage:manual-trigger",
-        "manual cold storage trigger invoked",
-        {"current_user": current_user},
-        run_id="post-fix",
-        hypothesis_id="H14",
-    )
-    # #endregion
+    _get_current_user_email(request)
     return _run_cold_storage_core(config, run_source="manual")
 
 
@@ -2693,15 +2432,6 @@ def owner_decision(req: OwnerDecisionRequest, request: Request):
         (req.kpi_id,),
     )
     if not rows:
-        # #region agent log
-        _agent_dbg(
-            "main.py:owner_decision:no-open-decision",
-            "owner decision attempted before open decision exists",
-            {"kpi_id": req.kpi_id, "owner_id": owner_id},
-            run_id="post-fix",
-            hypothesis_id="H6",
-        )
-        # #endregion
         raise HTTPException(
             status_code=400,
             detail="No open owner decision yet. Run cold storage evaluation after the decision window elapses.",
