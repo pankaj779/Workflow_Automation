@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
-import { FileBarChart, Plus, ArrowLeft, Loader2, Trash2, Search } from "lucide-react";
+import { FileBarChart, Plus, ArrowLeft, Loader2, Trash2, Search, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 interface KPI {
@@ -38,6 +38,7 @@ export default function ReportsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [deletingReportId, setDeletingReportId] = useState<string | null>(null);
   const [searchKpi, setSearchKpi] = useState("");
+  const [refreshingValues, setRefreshingValues] = useState(false);
 
   const loadData = async () => {
     try {
@@ -122,6 +123,23 @@ export default function ReportsPage() {
     k.name.toLowerCase().includes(searchKpi.toLowerCase()),
   );
 
+  const runRefreshKpiValues = async () => {
+    setRefreshingValues(true);
+    try {
+      const res = await apiCall<{ kpis_processed: number; total_value_rows: number }>("refreshKpiValues", {
+        body: {},
+      });
+      toast.success(
+        `Refreshed ${res.kpis_processed} active KPI(s), ${res.total_value_rows} value row(s) stored.`,
+      );
+    } catch (e) {
+      toast.error("Failed to refresh KPI values");
+      console.error(e);
+    } finally {
+      setRefreshingValues(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b border-border bg-card sticky top-0 z-40">
@@ -137,10 +155,26 @@ export default function ReportsPage() {
               </p>
             </div>
           </div>
-          <Button variant="outline" size="sm" onClick={() => navigate("/")} className="gap-1.5">
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back to Library
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="gap-1.5"
+              disabled={refreshingValues}
+              onClick={() => runRefreshKpiValues()}
+            >
+              {refreshingValues ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+              Refresh KPI values
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => navigate("/")} className="gap-1.5">
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Back to Library
+            </Button>
+          </div>
         </div>
       </header>
 

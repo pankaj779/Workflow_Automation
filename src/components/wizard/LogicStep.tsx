@@ -1098,10 +1098,12 @@ import { toast } from "sonner";
            )}
          <Button
            onClick={() => {
-             // #region agent log
-             const chosen = "builder" == queryMode ? cleanSQL(builderQueryPreview) : (selectedQuery === 'original' ? cleanSQL(sqlQuery) : cleanSQL(editableOptimizedSQL));
-             fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e56ee5'},body:JSON.stringify({sessionId:'e56ee5',location:'LogicStep:continue',message:'sql_chosen',data:{queryMode,selectedQuery,sqlQueryLen:sqlQuery?.length,editableOptimizedSQLLen:editableOptimizedSQL?.length,chosenLen:chosen?.length,chosenFirst100:chosen?.substring(0,100)},timestamp:Date.now()})}).catch(()=>{});
-             // #endregion
+             const chosen =
+               queryMode === "builder"
+                 ? cleanSQL(builderQueryPreview)
+                 : selectedQuery === "original"
+                   ? cleanSQL(sqlQuery)
+                   : cleanSQL(editableOptimizedSQL);
              setSelectedQueryV2(chosen);
              onNext();
            }}

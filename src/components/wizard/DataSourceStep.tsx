@@ -175,16 +175,10 @@ export function DataSourceStep({
         const allTables: TableWithColumns[] = [];
         for (const schemaId of selectedSchemas) {
           const [catalogName, schemaName] = schemaId.split(".");
-          // #region agent log
-          fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e56ee5'},body:JSON.stringify({sessionId:'e56ee5',location:'DataSourceStep.tsx:loadTables',message:'loading tables for schema',data:{schemaId,catalogName,schemaName},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
           try {
             const res = await apiCall<{ tables: any[] }>("getTables", {
               queryParams: { schema: schemaName, catalog: catalogName },
             });
-            // #region agent log
-            fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e56ee5'},body:JSON.stringify({sessionId:'e56ee5',location:'DataSourceStep.tsx:loadTables',message:'tables loaded',data:{schemaId,count:res.tables?.length},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             const tables = res.tables ?? [];
             tables.forEach(t => {
               allTables.push({
@@ -195,15 +189,9 @@ export function DataSourceStep({
               });
             });
           } catch (err) {
-            // #region agent log
-            fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e56ee5'},body:JSON.stringify({sessionId:'e56ee5',location:'DataSourceStep.tsx:loadTables',message:'FAILED to load tables',data:{schemaId,error:String(err)},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             console.error(`Failed to load tables for ${schemaId}`, err);
           }
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7286/ingest/b2dab708-5d2c-4f6e-88c4-af170d1372cc',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e56ee5'},body:JSON.stringify({sessionId:'e56ee5',location:'DataSourceStep.tsx:loadTables',message:'ALL tables loaded',data:{totalCount:allTables.length,schemas:selectedSchemas},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         setAvailableTables(allTables);
       } catch (err) {
         console.error("Failed to load tables", err);

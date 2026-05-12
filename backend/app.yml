@@ -1,3 +1,4 @@
+# Databricks Apps: set DB_* in workspace app settings — do not commit tokens.
 command:
   - bash
   - -c
@@ -9,11 +10,11 @@ python:
 
 env:
   - name: DB_HOST
-    value: "dbc-773a2938-c150.cloud.databricks.com"
+    value: ""
   - name: DB_HTTP_PATH
-    value: "/sql/1.0/warehouses/b5629c3b92806875"
+    value: ""
   - name: DB_TOKEN
-    value: "dapi3bb115f9a619abb31e47164eddb3639e"
+    value: ""
 
 resources:
   cpu: 1

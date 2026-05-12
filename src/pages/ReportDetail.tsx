@@ -3,27 +3,45 @@ import { useNavigate, useParams } from "react-router-dom";
 import { apiCall } from "@/lib/api-config";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ArrowLeft, FileBarChart, Loader2, BarChart3 } from "lucide-react";
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
+  AreaChart,
+  Area,
+  PieChart,
+  Pie,
+  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
   Legend,
-  Cell,
 } from "recharts";
 
 const CHART_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
+
+type ChartKind = "bar" | "line" | "area" | "pie";
+
+const DEFAULT_CHARTS: ChartKind[] = ["bar", "line", "area", "pie"];
 
 /** Infer value column (kpi_value, value) and label column (brand, name, etc.) from row keys */
 function inferChartKeys(rows: Record<string, unknown>[]) {
   if (!rows.length) return { valueKey: "kpi_value", labelKey: "brand" };
   const keys = Object.keys(rows[0]);
   const valueKey =
-    keys.find((k) => k.toLowerCase() === "kpi_value" || k.toLowerCase() === "value") || keys[keys.length - 1];
+    keys.find((k) => k.toLowerCase() === "kpi_value" || k.toLowerCase() === "value") ||
+    keys[keys.length - 1];
   const labelKey =
     keys.find((k) =>
       ["brand", "name", "category", "label", "dimension", "segment"].includes(k.toLowerCase()),
@@ -41,6 +59,7 @@ export default function ReportDetailPage() {
     kpis: { kpi_id: string; kpi_name: string; rows: Record<string, unknown>[] }[];
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [chartByKpi, setChartByKpi] = useState<Record<string, ChartKind>>({});
 
   useEffect(() => {
     if (!reportId) return;
@@ -100,6 +119,9 @@ export default function ReportDetailPage() {
             value: Number(r[valueKey]) || 0,
           }));
 
+          const defaultKind = DEFAULT_CHARTS[idx % DEFAULT_CHARTS.length];
+          const kind = chartByKpi[kpi.kpi_id] ?? defaultKind;
+
           if (chartData.length === 0) {
             return (
               <Card key={kpi.kpi_id} className="border-border/60">
@@ -118,54 +140,154 @@ export default function ReportDetailPage() {
             );
           }
 
+          const chartContent = (() => {
+            const common = {
+              margin: { top: 12, right: 12, left: 0, bottom: 0 },
+            };
+            const tooltipStyle = {
+              backgroundColor: "hsl(var(--card))",
+              border: "1px solid hsl(var(--border))",
+              borderRadius: "8px",
+            };
+
+            if (kind === "pie") {
+              return (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={chartData}
+                      dataKey="value"
+                      nameKey="label"
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={120}
+                      label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
+                    >
+                      {chartData.map((_, i) => (
+                        <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              );
+            }
+
+            if (kind === "line") {
+              return (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData} {...common}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                    <YAxis
+                      dataKey="value"
+                      tick={{ fontSize: 11 }}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v))}
+                    />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend />
+                    <Line
+                      type="monotone"
+                      dataKey="value"
+                      name={valueKey}
+                      stroke={CHART_COLORS[idx % CHART_COLORS.length]}
+                      strokeWidth={2}
+                      dot={{ r: 3 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              );
+            }
+
+            if (kind === "area") {
+              return (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={chartData} {...common}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                    <YAxis
+                      dataKey="value"
+                      tick={{ fontSize: 11 }}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v))}
+                    />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend />
+                    <Area
+                      type="monotone"
+                      dataKey="value"
+                      name={valueKey}
+                      stroke={CHART_COLORS[(idx + 1) % CHART_COLORS.length]}
+                      fill={CHART_COLORS[(idx + 1) % CHART_COLORS.length]}
+                      fillOpacity={0.35}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              );
+            }
+
+            return (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} {...common}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                  <YAxis
+                    dataKey="value"
+                    tick={{ fontSize: 11 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v))}
+                  />
+                  <Tooltip contentStyle={tooltipStyle} />
+                  <Legend />
+                  <Bar dataKey="value" name={valueKey} radius={[4, 4, 0, 0]} maxBarSize={48}>
+                    {chartData.map((_, i) => (
+                      <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            );
+          })();
+
           return (
             <Card key={kpi.kpi_id} className="border-border/60 shadow-sm">
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <BarChart3 className="h-4 w-4 text-primary" />
-                  {kpi.kpi_name}
-                </CardTitle>
-                <p className="text-xs text-muted-foreground">
-                  {chartData.length} data points • {labelKey} vs {valueKey}
-                </p>
+              <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <BarChart3 className="h-4 w-4 text-primary" />
+                    {kpi.kpi_name}
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {chartData.length} points • {labelKey} vs {valueKey}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-muted-foreground uppercase">Chart</span>
+                  <Select
+                    value={kind}
+                    onValueChange={(v) =>
+                      setChartByKpi((prev) => ({ ...prev, [kpi.kpi_id]: v as ChartKind }))
+                    }
+                  >
+                    <SelectTrigger className="h-8 w-[120px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="bar">Bar</SelectItem>
+                      <SelectItem value="line">Line</SelectItem>
+                      <SelectItem value="area">Area</SelectItem>
+                      <SelectItem value="pie">Pie</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </CardHeader>
               <CardContent>
-                <div className="h-[320px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={chartData} margin={{ top: 12, right: 12, left: 0, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                      <XAxis
-                        dataKey="label"
-                        tick={{ fontSize: 11 }}
-                        tickLine={false}
-                        axisLine={false}
-                      />
-                      <YAxis
-                        dataKey="value"
-                        tick={{ fontSize: 11 }}
-                        tickLine={false}
-                        axisLine={false}
-                        tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v))}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: "hsl(var(--card))",
-                          border: "1px solid hsl(var(--border))",
-                          borderRadius: "8px",
-                        }}
-                        formatter={(value: number) => [value.toLocaleString(), valueKey]}
-                        labelFormatter={(label) => `${labelKey}: ${label}`}
-                      />
-                      <Legend />
-                      <Bar dataKey="value" name={valueKey} radius={[4, 4, 0, 0]} maxBarSize={48}>
-                        {chartData.map((_, i) => (
-                          <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                {/* Summary stats - only when we have 2+ data points (min/max/avg meaningful) */}
+                <div className="h-[320px] w-full">{chartContent}</div>
                 {chartData.length >= 2 && (
                   <div className="mt-4 flex flex-wrap gap-4 pt-4 border-t border-border/60">
                     <div>

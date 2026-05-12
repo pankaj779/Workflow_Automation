@@ -4,13 +4,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Workflow, Plus, Search, RefreshCw, Sparkles, LayoutGrid, List, Star, Bell, FileBarChart, Snowflake, Shield, Trash2 } from "lucide-react";
+import { Workflow, Plus, Search, RefreshCw, Sparkles, LayoutGrid, List, Star, Bell, FileBarChart, Snowflake, Shield, Trash2, ChevronDown, Loader2 } from "lucide-react";
 import { DraftsDrawer } from "./DraftsDrawer";
 import { cn } from "@/lib/utils";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useUser } from "@/hooks/useUser";
 import { apiCall } from "@/lib/api-config";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 interface DraftKPI {
   id: string;
@@ -41,6 +42,10 @@ interface AppNotification {
   body: string;
   is_read: boolean;
   created_at?: string;
+  type?: string;
+  role?: string;
+  related_kpi_id?: string | null;
+  related_id?: string | null;
 }
 
 export function KPILibraryHeader({
@@ -61,6 +66,9 @@ export function KPILibraryHeader({
   const { user } = useUser();
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [expandedNotifId, setExpandedNotifId] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [refreshingKpis, setRefreshingKpis] = useState(false);
 
   const loadNotifications = async () => {
     if (!user?.email) return;
@@ -103,6 +111,72 @@ export function KPILibraryHeader({
   }, [user?.email]);
 
   const unreadCount = notifications.filter((n) => !n.is_read).length;
+
+  const runRefreshAllKpiValues = async () => {
+    setRefreshingKpis(true);
+    try {
+      const res = await apiCall<{
+        kpis_processed: number;
+        total_value_rows: number;
+      }>("refreshKpiValues", { body: {} });
+      window.alert(
+        `Refreshed ${res.kpis_processed} KPI(s), ${res.total_value_rows} total value row(s) stored in kpi_values (active KPIs only).`,
+      );
+    } catch (e) {
+      window.alert(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRefreshingKpis(false);
+    }
+  };
+
+  const submitOwnerChoice = async (kpiId: string, choice: "delete" | "move_back" | "keep_cold") => {
+    const key = `owner-${kpiId}-${choice}`;
+    setActionLoading(key);
+    try {
+      await apiCall("ownerDecision", {
+        body: { kpi_id: kpiId, choice },
+      });
+      await loadNotifications();
+      window.alert("Your choice was recorded. An admin may need to approve.");
+    } catch (e) {
+      window.alert(`Action failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const submitAdminApprove = async (decisionId: string, approve: boolean) => {
+    setActionLoading(`appr-${decisionId}`);
+    try {
+      await apiCall("approveDecision", {
+        body: { decision_id: decisionId, approve },
+      });
+      await loadNotifications();
+      window.alert(approve ? "Decision approved." : "Decision rejected.");
+    } catch (e) {
+      window.alert(`Action failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const submitAdminDirectAction = async (
+    decisionId: string,
+    action: "delete" | "move_back" | "keep_cold",
+  ) => {
+    setActionLoading(`adm-${decisionId}-${action}`);
+    try {
+      await apiCall("adminAction", {
+        body: { decision_id: decisionId, action },
+      });
+      await loadNotifications();
+      window.alert(`Admin action "${action}" applied.`);
+    } catch (e) {
+      window.alert(`Action failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
 
   const navItems = [
     { path: "/", label: "KPI Library", icon: LayoutGrid },
@@ -193,43 +267,169 @@ export function KPILibraryHeader({
                         <p className="text-sm font-medium">Notifications</p>
                         <p className="text-[11px] text-muted-foreground">Cold storage and KPI events</p>
                       </div>
-                      <div className="max-h-[320px] overflow-auto">
+                      <div className="max-h-[420px] overflow-auto">
                         {notifications.length === 0 ? (
                           <div className="px-3 py-8 text-center text-xs text-muted-foreground">
                             No notifications yet.
                           </div>
                         ) : (
-                          notifications.map((n) => (
-                            <button
-                              key={n.notification_id}
-                              onClick={() => markNotificationRead(n.notification_id)}
-                              className={cn(
-                                "w-full text-left px-3 py-2.5 border-b border-border/50 hover:bg-muted/50 transition-colors",
-                                !n.is_read && "bg-primary/5",
-                              )}
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <p className="text-xs font-medium text-foreground line-clamp-2">{n.title}</p>
-                                {!n.is_read && <span className="mt-1 h-2 w-2 rounded-full bg-primary shrink-0" />}
-                              </div>
-                              <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{n.body}</p>
-                              {n.created_at && (
-                                <p className="text-[10px] text-muted-foreground/80 mt-1">
-                                  {new Date(n.created_at).toLocaleString()}
-                                </p>
-                              )}
-                              <div className="mt-1 flex justify-end">
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                                  onClick={(e) => deleteNotification(n.notification_id, e)}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
-                              </div>
-                            </button>
-                          ))
+                          notifications.map((n) => {
+                            const isOpen = expandedNotifId === n.notification_id;
+                            const ownerCanAct =
+                              (n.type === "owner_choice" || n.type === "cold_reminder") &&
+                              n.related_kpi_id &&
+                              (n.role === "owner" || !n.role);
+                            const adminApprove =
+                              n.type === "approval_request" && n.related_id && user?.isAdmin;
+                            const adminNoResponse =
+                              n.type === "owner_no_response" && n.related_id && user?.isAdmin;
+                            return (
+                              <Collapsible
+                                key={n.notification_id}
+                                open={isOpen}
+                                onOpenChange={(open) => {
+                                  setExpandedNotifId(open ? n.notification_id : null);
+                                  if (open) void markNotificationRead(n.notification_id);
+                                }}
+                                className={cn(
+                                  "border-b border-border/50",
+                                  !n.is_read && "bg-primary/5",
+                                )}
+                              >
+                                <div className="px-3 py-2">
+                                  <CollapsibleTrigger asChild>
+                                    <button
+                                      type="button"
+                                      className="w-full flex items-start gap-2 text-left"
+                                    >
+                                      <ChevronDown
+                                        className={cn(
+                                          "h-4 w-4 shrink-0 mt-0.5 transition-transform",
+                                          isOpen && "rotate-180",
+                                        )}
+                                      />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-start justify-between gap-2">
+                                          <p className="text-xs font-medium text-foreground line-clamp-2">
+                                            {n.title}
+                                          </p>
+                                          {!n.is_read && (
+                                            <span className="inline-block h-2 w-2 rounded-full bg-primary shrink-0 mt-0.5" />
+                                          )}
+                                        </div>
+                                        {!isOpen && (
+                                          <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">
+                                            {n.body}
+                                          </p>
+                                        )}
+                                        {n.created_at && (
+                                          <p className="text-[10px] text-muted-foreground/80 mt-1">
+                                            {new Date(n.created_at).toLocaleString()}
+                                          </p>
+                                        )}
+                                      </div>
+                                    </button>
+                                  </CollapsibleTrigger>
+                                  <CollapsibleContent className="pt-2 pb-1 space-y-2">
+                                    <p className="text-[11px] text-muted-foreground whitespace-pre-wrap break-words">
+                                      {n.body}
+                                    </p>
+                                    {ownerCanAct && n.related_kpi_id && (
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {(
+                                          [
+                                            ["delete", "Delete"],
+                                            ["move_back", "Move back"],
+                                            ["keep_cold", "Keep cold"],
+                                          ] as const
+                                        ).map(([choice, label]) => (
+                                          <Button
+                                            key={choice}
+                                            size="sm"
+                                            variant="secondary"
+                                            className="h-7 text-[10px]"
+                                            disabled={!!actionLoading}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              submitOwnerChoice(n.related_kpi_id!, choice);
+                                            }}
+                                          >
+                                            {actionLoading === `owner-${n.related_kpi_id}-${choice}` ? (
+                                              <Loader2 className="h-3 w-3 animate-spin" />
+                                            ) : (
+                                              label
+                                            )}
+                                          </Button>
+                                        ))}
+                                      </div>
+                                    )}
+                                    {adminApprove && (
+                                      <div className="flex flex-wrap gap-1.5">
+                                        <Button
+                                          size="sm"
+                                          className="h-7 text-[10px]"
+                                          disabled={!!actionLoading}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            submitAdminApprove(n.related_id!, true);
+                                          }}
+                                        >
+                                          Approve
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-7 text-[10px]"
+                                          disabled={!!actionLoading}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            submitAdminApprove(n.related_id!, false);
+                                          }}
+                                        >
+                                          Reject
+                                        </Button>
+                                      </div>
+                                    )}
+                                    {adminNoResponse && (
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {(
+                                          [
+                                            ["delete", "Delete"],
+                                            ["move_back", "Move back"],
+                                            ["keep_cold", "Keep cold"],
+                                          ] as const
+                                        ).map(([action, label]) => (
+                                          <Button
+                                            key={action}
+                                            size="sm"
+                                            variant="secondary"
+                                            className="h-7 text-[10px]"
+                                            disabled={!!actionLoading}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              submitAdminDirectAction(n.related_id!, action);
+                                            }}
+                                          >
+                                            {label}
+                                          </Button>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div className="flex justify-end">
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                                        onClick={(e) => deleteNotification(n.notification_id, e)}
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </div>
+                                  </CollapsibleContent>
+                                </div>
+                              </Collapsible>
+                            );
+                          })
                         )}
                       </div>
                       </PopoverContent>
@@ -244,12 +444,25 @@ export function KPILibraryHeader({
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-8 w-8">
-                    <RefreshCw className="h-4 w-4" />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    disabled={refreshingKpis}
+                    onClick={() => runRefreshAllKpiValues()}
+                  >
+                    {refreshingKpis ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" />
+                    )}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="max-w-[280px] text-center">
-                  <p className="text-xs">Refresh KPI library from source tables including SQL definitions, metadata signatures, and lineage data</p>
+                  <p className="text-xs">
+                    Run all active KPI SQL queries and store latest results in kpi_values (skips cold /
+                    inactive KPIs)
+                  </p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>

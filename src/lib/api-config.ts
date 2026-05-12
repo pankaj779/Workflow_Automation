@@ -46,6 +46,7 @@ export interface APIConfig {
     deleteReport: APIEndpoint;
     getKPIMetrics: APIEndpoint;
     getKPIValues: APIEndpoint;
+    refreshKpiValues: APIEndpoint;
 
     // Cold Storage & Notifications
     runColdStorage: APIEndpoint;
@@ -155,6 +156,11 @@ const configs: Record<string, APIConfig> = {
         method: 'GET',
         description: 'Get KPI metric values for charts',
       },
+      refreshKpiValues: {
+        url: '/kpis/refresh-values',
+        method: 'POST',
+        description: 'Re-run all active KPI SQL and refresh kpi_values',
+      },
 
       runColdStorage: {
         url: '/cold-storage/run',
@@ -247,6 +253,7 @@ const configs: Record<string, APIConfig> = {
       deleteReport: { url: '/reports/:reportId', method: 'DELETE', description: 'Soft-delete a report' },
       getKPIMetrics: { url: '/kpis/:kpiId/metrics', method: 'GET', description: 'Get usage and cold-storage metrics for a KPI' },
       getKPIValues: { url: '/kpis/:kpiId/values', method: 'GET', description: 'Get KPI metric values for charts' },
+      refreshKpiValues: { url: '/kpis/refresh-values', method: 'POST', description: 'Refresh all active KPI values' },
       runColdStorage: { url: '/cold-storage/run', method: 'POST', description: 'Run cold storage job' },
       ownerDecision: { url: '/cold-storage/owner-decision', method: 'POST', description: 'Submit KPI owner decision for a cold KPI' },
       approveDecision: { url: '/cold-storage/approve', method: 'POST', description: 'Admin approves or rejects a cold storage decision' },

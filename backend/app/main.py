@@ -32,17 +32,6 @@ import time
 _env_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=_env_path)
 
-# #region agent log
-_DEBUG_LOG = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "debug-f798bc.log"))
-def _dbg(loc: str, msg: str, data: dict):
-    try:
-        line = json.dumps({"sessionId": "f798bc", "location": loc, "message": msg, "data": data, "timestamp": int(time.time() * 1000)}) + "\n"
-        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
-            f.write(line)
-    except Exception:
-        pass
-# #endregion
-
 # ==============================
 # Databricks Config
 # ==============================
@@ -177,6 +166,12 @@ _SUPPORTING_TABLES_DDL = {
         kpi_id STRING,
         created_at TIMESTAMP,
         value_json STRING
+    """,
+    "kpi_values_inactive": """
+        kpi_id STRING,
+        created_at TIMESTAMP,
+        value_json STRING,
+        archived_at TIMESTAMP
     """,
     "cold_storage_decisions": """
         decision_id STRING,
@@ -646,9 +641,6 @@ def _check_duplicate_via_fm(
         if not candidates:
             return []
         equiv_indices = fm_check_equivalent_to_any(new_sql, candidates)
-        # #region agent log
-        _dbg("_check_duplicate_via_fm", "fm_pairwise", {"candidates": len(candidates), "equiv_indices": equiv_indices, "from_lineage": from_lineage, "from_table_fallback": not from_lineage})
-        # #endregion
         return [
             {"kpi_name": rows[i]["kpi_name"], "matched_signature_type": "fm_equivalent", "matched_signature": "semantic"}
             for i in equiv_indices
@@ -853,6 +845,98 @@ def _ensure_kpi_values(fully_qualified: str) -> None:
             execute(f"CREATE TABLE IF NOT EXISTS {fully_qualified} ({_KPI_VALUES_DDL.strip()})")
         except Exception as e:
             raise
+
+
+_KPI_VALUES_INACTIVE_DDL = """
+    kpi_id STRING,
+    created_at TIMESTAMP,
+    value_json STRING,
+    archived_at TIMESTAMP
+"""
+
+
+def _ensure_kpi_values_inactive(fully_qualified: str) -> None:
+    try:
+        _get_table_columns(fully_qualified)
+    except Exception:
+        try:
+            execute(f"CREATE TABLE IF NOT EXISTS {fully_qualified} ({_KPI_VALUES_INACTIVE_DDL.strip()})")
+        except Exception:
+            raise
+
+
+def _archive_kpi_values_to_inactive(kpi_id: str) -> None:
+    """Move snapshot rows from kpi_values to kpi_values_inactive when KPI goes to cold."""
+    try:
+        _ensure_kpi_values_inactive(table("kpi_values_inactive"))
+        rows = fetch_all(
+            f"SELECT created_at, value_json FROM {table('kpi_values')} WHERE kpi_id = ?",
+            (kpi_id,),
+        )
+        now = datetime.utcnow()
+        for r in rows:
+            execute(
+                f"""
+                INSERT INTO {table("kpi_values_inactive")}
+                (kpi_id, created_at, value_json, archived_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (kpi_id, r["created_at"], r["value_json"], now),
+            )
+        execute(f"DELETE FROM {table('kpi_values')} WHERE kpi_id = ?", (kpi_id,))
+    except Exception:
+        pass
+
+
+def _fetch_merged_kpi_value_rows(kpi_id: str) -> list:
+    """Active runs in kpi_values + historical cold-period rows in kpi_values_inactive (for charts after move-back)."""
+    merged = []
+    try:
+        _ensure_kpi_values(table("kpi_values"))
+        for r in fetch_all(
+            f"SELECT value_json, created_at FROM {table('kpi_values')} WHERE kpi_id = ? ORDER BY created_at",
+            (kpi_id,),
+        ):
+            merged.append((r.get("created_at"), r.get("value_json")))
+    except Exception:
+        pass
+    try:
+        _ensure_kpi_values_inactive(table("kpi_values_inactive"))
+        for r in fetch_all(
+            f"SELECT value_json, created_at FROM {table('kpi_values_inactive')} WHERE kpi_id = ? ORDER BY created_at",
+            (kpi_id,),
+        ):
+            merged.append((r.get("created_at"), r.get("value_json")))
+    except Exception:
+        pass
+    merged.sort(key=lambda x: x[0] if x[0] is not None else datetime(1970, 1, 1))
+    out = []
+    for _, vj in merged:
+        try:
+            out.append(json.loads(vj))
+        except Exception:
+            pass
+    return out
+
+
+def _refresh_single_kpi_values(kpi_id: str, sql_def: str) -> int:
+    """Re-run SQL and replace kpi_values rows for one KPI. Returns row count inserted."""
+    if not sql_def or not sql_def.strip():
+        return 0
+    result = run_sql_query(sql_def, limit=10000)
+    rows = result.get("rows", [])
+    now = datetime.utcnow()
+    execute(f"DELETE FROM {table('kpi_values')} WHERE kpi_id = ?", (kpi_id,))
+    _ensure_kpi_values(table("kpi_values"))
+    for row in rows:
+        execute(
+            f"""
+            INSERT INTO {table("kpi_values")} (kpi_id, created_at, value_json)
+            VALUES (?, ?, ?)
+            """,
+            (kpi_id, now, json.dumps(row, default=decimal_serializer)),
+        )
+    return len(rows)
 
 
 # ==============================
@@ -1339,31 +1423,24 @@ def get_report_data(report_id: str):
     kpis_with_data = []
     for kpi_id in kpi_ids:
         km = fetch_all(
-            f"SELECT kpi_id, kpi_name, sql_definition FROM {table('kpi_master')} WHERE kpi_id = ? AND is_deleted = false",
+            f"SELECT kpi_id, kpi_name, sql_definition, storage_status FROM {table('kpi_master')} WHERE kpi_id = ? AND is_deleted = false",
             (kpi_id,),
         )
         if not km:
             continue
         kpi_name = km[0].get("kpi_name", kpi_id)
         sql_def = km[0].get("sql_definition")
+        storage = (km[0].get("storage_status") or "active").lower()
+        is_cold = storage == "cold"
 
         rows_data = []
         try:
-            kv_rows = fetch_all(
-                f"SELECT value_json FROM {table('kpi_values')} WHERE kpi_id = ? ORDER BY created_at",
-                (kpi_id,),
-            )
-            if kv_rows:
-                for r in kv_rows:
-                    try:
-                        rows_data.append(json.loads(r["value_json"]))
-                    except Exception:
-                        pass
-            if not rows_data and sql_def:
+            rows_data = _fetch_merged_kpi_value_rows(kpi_id)
+            if not rows_data and sql_def and not is_cold:
                 result = run_sql_query(sql_def, limit=500)
                 rows_data = result.get("rows", [])
         except Exception:
-            if sql_def:
+            if sql_def and not is_cold:
                 try:
                     result = run_sql_query(sql_def, limit=500)
                     rows_data = result.get("rows", [])
@@ -1387,32 +1464,26 @@ def get_report_data(report_id: str):
 @app.get("/kpis/{kpi_id}/values")
 def get_kpi_values(kpi_id: str):
     """
-    Returns KPI metric values for charts. From kpi_values, or by executing sql_definition if empty.
+    Returns KPI metric values for charts. Merges kpi_values + kpi_values_inactive.
+    Cold KPIs: no live SQL execution (historical only).
     """
     km = fetch_all(
-        f"SELECT kpi_id, kpi_name, sql_definition FROM {table('kpi_master')} WHERE kpi_id = ? AND is_deleted = false",
+        f"SELECT kpi_id, kpi_name, sql_definition, storage_status FROM {table('kpi_master')} WHERE kpi_id = ? AND is_deleted = false",
         (kpi_id,),
     )
     if not km:
         raise HTTPException(status_code=404, detail="KPI not found")
 
+    storage = (km[0].get("storage_status") or "active").lower()
+    is_cold = storage == "cold"
     rows_data = []
     try:
-        kv_rows = fetch_all(
-            f"SELECT value_json FROM {table('kpi_values')} WHERE kpi_id = ? ORDER BY created_at",
-            (kpi_id,),
-        )
-        if kv_rows:
-            for r in kv_rows:
-                try:
-                    rows_data.append(json.loads(r["value_json"]))
-                except Exception:
-                    pass
-        if not rows_data and km[0].get("sql_definition"):
+        rows_data = _fetch_merged_kpi_value_rows(kpi_id)
+        if not rows_data and km[0].get("sql_definition") and not is_cold:
             result = run_sql_query(km[0]["sql_definition"], limit=500)
             rows_data = result.get("rows", [])
     except Exception:
-        if km[0].get("sql_definition"):
+        if km[0].get("sql_definition") and not is_cold:
             try:
                 result = run_sql_query(km[0]["sql_definition"], limit=500)
                 rows_data = result.get("rows", [])
@@ -1423,6 +1494,44 @@ def get_kpi_values(kpi_id: str):
         "kpi_id": kpi_id,
         "kpi_name": km[0].get("kpi_name", kpi_id),
         "rows": rows_data,
+    }
+
+
+@app.post("/kpis/refresh-values")
+def refresh_all_kpi_values(request: Request):
+    """
+    Re-run SQL for every Active KPI and replace kpi_values (latest snapshot).
+    Skips cold/inactive KPIs. Requires authenticated user.
+    """
+    _get_current_user_email(request)
+    try:
+        active = fetch_all(
+            f"""
+            SELECT kpi_id, sql_definition FROM {table("kpi_master")}
+            WHERE is_deleted = false
+              AND (storage_status IS NULL OR LOWER(storage_status) = 'active')
+              AND (status IS NULL OR status = 'Active')
+            """,
+        )
+    except Exception:
+        active = []
+
+    results = []
+    total_rows = 0
+    for row in active:
+        kid = row["kpi_id"]
+        sql_def = row.get("sql_definition") or ""
+        try:
+            n = _refresh_single_kpi_values(kid, sql_def)
+            total_rows += n
+            results.append({"kpi_id": kid, "rows_inserted": n, "ok": True})
+        except Exception as ex:
+            results.append({"kpi_id": kid, "rows_inserted": 0, "ok": False, "error": str(ex)})
+
+    return {
+        "kpis_processed": len(results),
+        "total_value_rows": total_rows,
+        "results": results,
     }
 
 
@@ -1746,10 +1855,6 @@ def query_preparation(req: QueryPreparationRequest):
         sql_cols = _extract_columns_from_sql(req.sql)
         source_table = sql_table or req.source_table or "unknown"
         columns = sql_cols if sql_cols else (req.columns or [])
-        # #region agent log
-        _dbg("query_preparation", "lineage_derived", {"source_table": source_table, "columns": columns[:10], "from_sql_table": bool(sql_table), "from_sql_cols": bool(sql_cols)})
-        # #endregion
-
         # --- Generate signatures ---
         metadata_sig = generate_metadata_signature(req.sql)
         semantic_sig = generate_semantic_signature(req.sql, prompt=req.prompt)
@@ -1762,10 +1867,6 @@ def query_preparation(req: QueryPreparationRequest):
             lineage_signature=lineage_sig,
             extracted_table=source_table if source_table != "unknown" else None,
         )
-        # #region agent log
-        _dbg("query_preparation", "duplicate_check", {"duplicate": bool(duplicates), "count": len(duplicates), "matched_type": duplicates[0]["matched_signature_type"] if duplicates else None})
-        # #endregion
-
         if duplicates:
             first = duplicates[0]
             return {
@@ -2237,6 +2338,8 @@ def _run_cold_storage_core(config: ColdStorageRunConfig, run_source: str = "manu
             """,
             (k["kpi_id"],),
         )
+
+        _archive_kpi_values_to_inactive(k["kpi_id"])
 
         # notify all admins and owner
         owner_id = k.get("owner_team") or "owner"

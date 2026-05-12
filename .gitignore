@@ -22,3 +22,5 @@ src/api-client/core/OpenAPI.ts
 # =========================
 .env
 .env.*
+# Local / Cursor debug logs
+debug-*.log

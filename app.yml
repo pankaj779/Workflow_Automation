@@ -1,16 +1,20 @@
+# Databricks Apps: configure DB_* in the app UI / secrets — do not commit real tokens.
 command:
   - bash
   - -c
   - |
-      uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+      uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+
+python:
+  requirements_file: backend/requirements.txt
 
 env:
   - name: DB_HOST
-    value: "dbc-0d446778-5d3c.cloud.databricks.com"
+    value: ""
   - name: DB_HTTP_PATH
-    value: "/sql/1.0/warehouses/7469fa770f441a86"
+    value: ""
   - name: DB_TOKEN
-    value: "dapi08e8bba3b4492d70d00ccd53951b3a3b"
+    value: ""
 
 resources:
   cpu: 1
