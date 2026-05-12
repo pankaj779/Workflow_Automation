@@ -39,9 +39,14 @@ DATABRICKS_SERVER_HOSTNAME = os.getenv("DB_HOST")
 DATABRICKS_HTTP_PATH = os.getenv("DB_HTTP_PATH")
 DATABRICKS_TOKEN = os.getenv("DB_TOKEN")
 
-# 👉 Unity Catalog settings
-DB_CATALOG = "poc_workspace"
-DB_SCHEMA = "gold_plus_datamart"
+# Unity Catalog for KPI tables (queries are fully-qualified with these).
+DB_CATALOG = os.getenv("DB_CATALOG", "poc_workspace").strip()
+DB_SCHEMA = os.getenv("DB_SCHEMA", "gold_plus_datamart").strip()
+
+# Optional: pin SQL warehouse session catalog/schema at connect().
+# Omit both by default — a non-existent catalog here breaks listing (SHOW CATALOGS) before any query runs.
+_DB_INITIAL_CATALOG = os.getenv("DB_INITIAL_CATALOG", "").strip()
+_DB_INITIAL_SCHEMA = os.getenv("DB_INITIAL_SCHEMA", "").strip()
 
 
 def table(name: str) -> str:
@@ -49,6 +54,41 @@ def table(name: str) -> str:
     return f"{DB_CATALOG}.{DB_SCHEMA}.{name}"
 
 _conn_pool: list = []
+
+def _require_sql_warehouse_config():
+    missing = []
+    if not DATABRICKS_SERVER_HOSTNAME or not str(DATABRICKS_SERVER_HOSTNAME).strip():
+        missing.append("DB_HOST")
+    if not DATABRICKS_HTTP_PATH or not str(DATABRICKS_HTTP_PATH).strip():
+        missing.append("DB_HTTP_PATH")
+    if not DATABRICKS_TOKEN or not str(DATABRICKS_TOKEN).strip():
+        missing.append("DB_TOKEN")
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "SQL warehouse secrets are missing for this app.",
+                "missing": missing,
+                "hint": "Databricks Apps → Environment / secrets → set DB_HOST (hostname only), DB_HTTP_PATH (e.g. /sql/1.0/warehouses/<id>), and DB_TOKEN (PAT). Use a Unity Catalog-enabled SQL warehouse.",
+            },
+        )
+
+
+def _catalog_name_from_row(row: dict) -> Optional[str]:
+    """Normalize SHOW CATALOGS row keys across ODBC/driver variants."""
+    if not row:
+        return None
+    lower = {(str(k).lower()): v for k, v in row.items()}
+    for key in ("catalog", "catalog_name", "catalogname"):
+        v = lower.get(key)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    if len(lower) == 1:
+        v = next(iter(lower.values()))
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return None
+
 
 def get_connection():
     if _conn_pool:
@@ -61,13 +101,16 @@ def get_connection():
                 conn.close()
             except Exception:
                 pass
-    return sql.connect(
+    kw = dict(
         server_hostname=DATABRICKS_SERVER_HOSTNAME,
         http_path=DATABRICKS_HTTP_PATH,
         access_token=DATABRICKS_TOKEN,
-        catalog=DB_CATALOG,
-        schema=DB_SCHEMA,
     )
+    if _DB_INITIAL_CATALOG:
+        kw["catalog"] = _DB_INITIAL_CATALOG
+    if _DB_INITIAL_SCHEMA:
+        kw["schema"] = _DB_INITIAL_SCHEMA
+    return sql.connect(**kw)
 
 
 def _return_conn(conn):
@@ -1544,9 +1587,19 @@ def list_catalogs():
     """
     List all available Unity Catalog catalogs.
     """
+    _require_sql_warehouse_config()
     try:
         rows = fetch_all("SHOW CATALOGS")
-        return [CatalogItem(name=r.get("catalog") or r.get("catalog_name")) for r in rows]
+        out: List[CatalogItem] = []
+        seen: set = set()
+        for r in rows:
+            nm = _catalog_name_from_row(r)
+            if nm and nm not in seen:
+                seen.add(nm)
+                out.append(CatalogItem(name=nm))
+        return out
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"SHOW CATALOGS failed: {e}")
 
@@ -1556,15 +1609,28 @@ def list_schemas(catalog: str):
     """
     List all schemas for a given catalog.
     """
+    _require_sql_warehouse_config()
     try:
-        rows = fetch_all(f"SHOW SCHEMAS IN {catalog}")
+        catalog_token = catalog.strip().strip("`")
+        if any(c in catalog_token for c in (" ", ".", "-", "/")):
+            catalog_token = f"`{catalog_token}`"
+        rows = fetch_all(f"SHOW SCHEMAS IN {catalog_token}")
         # Databricks returns column "databaseName" or "schema_name" depending on version
         items: List[SchemaItem] = []
         for r in rows:
-            name = r.get("databaseName") or r.get("schema_name") or r.get("schema")
+            lk = {(str(k).lower()): v for k, v in r.items()}
+            name = (
+                lk.get("databasename")
+                or lk.get("database_name")
+                or lk.get("schema_name")
+                or lk.get("schema")
+                or lk.get("namespace")
+            )
             if name:
-                items.append(SchemaItem(catalog=catalog, name=name))
+                items.append(SchemaItem(catalog=catalog, name=str(name)))
         return items
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1575,6 +1641,7 @@ def list_tables(schema: str, catalog: Optional[str] = None):
     Get all tables + column definitions for selected catalog/schema.
     If catalog is not provided, default DB_CATALOG is used.
     """
+    _require_sql_warehouse_config()
     try:
         effective_schema = schema
         global DB_SCHEMA  # used for internal helpers
@@ -1612,6 +1679,8 @@ def list_tables(schema: str, catalog: Optional[str] = None):
             # default: original helper using configured catalog/schema
             tables = get_tables_with_columns(effective_schema)
             return {"tables": tables}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1621,6 +1690,7 @@ def preview_table(schema: str, table: str, catalog: Optional[str] = None):
     """
     Get top 10 preview rows from selected table (supports explicit catalog).
     """
+    _require_sql_warehouse_config()
     try:
         if catalog:
             preview_query = f"""
@@ -1634,7 +1704,9 @@ def preview_table(schema: str, table: str, catalog: Optional[str] = None):
             columns = list(rows[0].keys())
             return {"columns": columns, "rows": rows}
         return get_table_preview(schema, table)
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         return {"columns": [], "rows": []}
 
 def _extract_table_from_sql(sql: str) -> Optional[str]:

@@ -311,10 +311,26 @@ export async function apiCall<T>(
     },
     body: options?.body ? JSON.stringify(options.body) : undefined,
   });
-  
-  if (!response.ok) {
-    throw new Error(`API call failed: ${response.statusText}`);
+
+  const text = await response.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
   }
-  
-  return response.json();
+
+  if (!response.ok) {
+    let hint = `${response.status} ${response.statusText || ""}`.trim();
+    if (data && typeof data === "object" && data !== null && "detail" in data) {
+      const d = (data as { detail: unknown }).detail;
+      hint += ": ";
+      hint += typeof d === "string" ? d : JSON.stringify(d);
+    } else if (text) {
+      hint += `: ${text.slice(0, 500)}`;
+    }
+    throw new Error(`API call failed: ${hint}`);
+  }
+
+  return data as T;
 }

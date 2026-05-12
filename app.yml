@@ -1,7 +1,10 @@
 # Databricks Apps (Databricks Repos workflow):
 # - Point the Repo at THIS directory (the repo root with app.yml).
 # - After git pull locally or in CI, run: npm ci && npm run build  (committed dist/ is optional).
-# - Set DB_HOST, DB_HTTP_PATH, DB_TOKEN (and FM/Genie vars as needed) in the app secrets — never commit tokens.
+# - Required app secrets: DB_HOST (hostname only), DB_HTTP_PATH (/sql/1.0/warehouses/...), DB_TOKEN (PAT with SQL access).
+#   Use a Unity Catalog–enabled SQL warehouse. Optional: DB_CATALOG / DB_SCHEMA (default poc_workspace / gold_plus_datamart for KPI tables).
+#   Optional session pin (only if needed): DB_INITIAL_CATALOG, DB_INITIAL_SCHEMA — omit if connect fails with unknown catalog.
+# - Set FM/Genie env vars as needed — never commit tokens.
 command:
   - bash
   - -c
