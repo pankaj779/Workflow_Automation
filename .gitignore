@@ -13,11 +13,6 @@ __pycache__/
 *.pyd
 
 # =========================
-# OpenAPI generated client
-# =========================
-src/api-client/core/OpenAPI.ts
-
-# =========================
 # Environment & secrets
 # =========================
 .env
