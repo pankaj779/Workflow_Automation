@@ -1,4 +1,4 @@
-# Databricks Apps: set DB_* in workspace app settings — do not commit tokens.
+# See root app.yml — use Databricks Repos at repo root; set DB_* and other secrets in the app UI.
 command:
   - bash
   - -c

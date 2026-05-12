@@ -28,7 +28,7 @@ import threading
 import time
 
 
-# Hard-code the OpenAI API key so Databricks Apps doesn’t need secrets.
+# Optional: local `.env` next to this file (`backend/app/.env`). In Databricks Apps, set secrets in the app UI.
 _env_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=_env_path)
 

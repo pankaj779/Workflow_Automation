@@ -60,9 +60,11 @@ This project is built with:
 - shadcn-ui
 - Tailwind CSS
 
-## How can I deploy this project?
+## Deploying as a Databricks App (GitHub / Repos)
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+1. Clone this repo in **Databricks Repos** (workspace → Repos). Use the **repository root** that contains `app.yml`.
+2. Before publishing (or locally before push), build the SPA: `npm ci && npm run build` — the backend serves **`dist/`** from `backend.app.main`.
+3. In **Databricks Apps**, create/configure the app to use `app.yml` and set **`DB_HOST`**, **`DB_HTTP_PATH`**, **`DB_TOKEN`**, plus any Genie/Foundation Model env vars in the app’s secret scope — do not commit tokens.
 
 ## Can I connect a custom domain to my Lovable project?
 
