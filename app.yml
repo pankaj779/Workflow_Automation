@@ -14,8 +14,28 @@ command:
 python:
   requirements_file: backend/requirements.txt
 
-# Do not list DB_* here with empty strings — put real values in the app UI:
-# Apps → workflow-automation → Environment → Edit, or attach secrets via "Add resources".
+# SQL connection (your app reads DB_* from the process env).
+# IMPORTANT: The Apps "Environment" page is READ-ONLY — you do not edit variables there.
+# Add custom variables only via THIS file (`env:`) and/or workspace resources — see below.
+#
+# Recommended flow:
+# 1) Workspace: create (or reuse) a Databricks Secret Scope and store keys, e.g. db_token.
+# 2) Apps UI: Compute → Apps → workflow-automation → Edit (top right).
+# 3) In the wizard, go NEXT past "Configure Git" until you reach **Configure resources**.
+# 4) Click **+ Add resource** → Secret → pick the scope/key → assign a **resource key**
+#    (example: KPI_DB_TOKEN). Save the app.
+# 5) Uncomment the `env` block below so `valueFrom` matches that resource key exactly.
+#
+# Alternative (private repo only, not for public GitHub): put non-secret host/path/token in `env`
+# using `value:` — never commit a real PAT to a public repo.
+#
+# env:
+#   - name: DB_HOST
+#     value: "dbc-xxxx.cloud.databricks.com"
+#   - name: DB_HTTP_PATH
+#     value: "/sql/1.0/warehouses/xxxxxxxx"
+#   - name: DB_TOKEN
+#     valueFrom: KPI_DB_TOKEN
 
 resources:
   cpu: 1
