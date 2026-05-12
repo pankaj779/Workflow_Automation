@@ -14,13 +14,8 @@ command:
 python:
   requirements_file: backend/requirements.txt
 
-env:
-  - name: DB_HOST
-    value: ""
-  - name: DB_HTTP_PATH
-    value: ""
-  - name: DB_TOKEN
-    value: ""
+# Do not list DB_* here with empty strings — put real values in the app UI:
+# Apps → workflow-automation → Environment → Edit, or attach secrets via "Add resources".
 
 resources:
   cpu: 1

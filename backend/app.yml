@@ -8,13 +8,7 @@ command:
 python:
   requirements_file: backend/requirements.txt
 
-env:
-  - name: DB_HOST
-    value: ""
-  - name: DB_HTTP_PATH
-    value: ""
-  - name: DB_TOKEN
-    value: ""
+# Secrets: set in Databricks Apps Environment (do not use empty env: entries here).
 
 resources:
   cpu: 1
