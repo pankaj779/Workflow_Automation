@@ -32,9 +32,9 @@ function looksLikeListTablesPrompt(prompt: string): boolean {
   );
 }
 
- interface LogicStepProps {
+interface LogicStepProps {
    tableColumns: string[];
-   initialSelectedColumns?: any;   // 👈 add this
+   initialSelectedColumns?: string[];
    queryMode: 'builder' | 'sql';
    onQueryModeChange: (mode: 'builder' | 'sql') => void;
    queryBuilderConfig: QueryBuilderConfig;
@@ -49,7 +49,7 @@ function looksLikeListTablesPrompt(prompt: string): boolean {
    onBack: () => void;
    selectedTable: string | { id: string; name: string; catalog: string; schema: string } | null;
    setSelectedQueryV2: (sql: string) => void;
-   tablePreviewRows: any;
+   tablePreviewRows: Record<string, unknown>[];
    selectedColumns?: { tableName: string; tableId: string; columns: string[] }[];
    onGeniePromptUsed?: (prompt: string) => void;
    semanticPrompt?: string | null;
@@ -142,6 +142,8 @@ function looksLikeListTablesPrompt(prompt: string): boolean {
         selectedColumns: initialSelectedColumns,
       });
     }
+    // Intentionally only react to wizard-provided seeds; widening deps re-fires after every builder change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSelectedColumns]);
 
   // Fetch preview when Sample Data dialog opens (from selectedColumns or selectedTable)
