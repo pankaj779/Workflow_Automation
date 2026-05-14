@@ -1,8 +1,8 @@
 # Databricks Apps (Databricks Repos workflow):
 # - Point the Repo at THIS directory (the repo root with app.yml).
 # - After git pull locally or in CI, run: npm ci && npm run build  (committed dist/ is optional).
-# - DB_TOKEN: PAT must NOT be committed. Store in workspace secret scope (e.g. key db_token), then
-#   attach it in Apps → Settings → Resources with resource key KPI_DB_TOKEN (must match valueFrom below).
+# - DB_TOKEN: add Secret under Apps → Resources. Use resource key shown there (often default `secret`).
+#   valueFrom below MUST equal that resource key exactly — NOT the scope secret key name (e.g. db_token).
 # - Admin RBAC: ADMIN_EMAILS + optional LOCAL_USER_EMAIL (fallback when X-Forwarded-Email is unset).
 # - Cold storage tuning: optional env vars (see main.py); omitted here = use code defaults. Do not copy
 #   absurd test values from local .env into production YAML.
@@ -10,19 +10,19 @@ command:
   - bash
   - -c
   - |
-      uvicorn backend.app.main:app --host 0.0.0.0 --port ${DATABRICKS_APP_PORT}
+      exec uvicorn backend.app.main:app --host "${UVICORN_HOST:-0.0.0.0}" --port "${UVICORN_PORT:-${DATABRICKS_APP_PORT}}"
 
 python:
   requirements_file: backend/requirements.txt
 
-# SQL + auth env for Databricks Apps (no PAT in Git — use Secret resource KPI_DB_TOKEN).
+# SQL + auth for Apps (token via Secret resource — valueFrom = Apps "resource key", usually `secret`).
 env:
   - name: DB_HOST
     value: "dbc-0d446778-5d3c.cloud.databricks.com"
   - name: DB_HTTP_PATH
     value: "/sql/1.0/warehouses/7469fa770f441a86"
   - name: DB_TOKEN
-    valueFrom: KPI_DB_TOKEN
+    valueFrom: secret
   - name: LOCAL_USER_EMAIL
     value: "pankajprajapathi9900@gmail.com"
   - name: ADMIN_EMAILS
