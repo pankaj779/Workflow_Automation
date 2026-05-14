@@ -24,7 +24,7 @@ env:
   - name: DB_TOKEN
     valueFrom: KPI_DB_TOKEN
   - name: LOCAL_USER_EMAIL
-    value: "prajapathipankaj321@gmail.com"
+    value: "pankajprajapathi9900@gmail.com"
   - name: ADMIN_EMAILS
     value: "prajapathipankaj321@gmail.com"
 
