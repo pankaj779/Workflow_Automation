@@ -1,10 +1,11 @@
 # Databricks Apps (Databricks Repos workflow):
 # - Point the Repo at THIS directory (the repo root with app.yml).
 # - After git pull locally or in CI, run: npm ci && npm run build  (committed dist/ is optional).
-# - Required app secrets: DB_HOST (hostname only), DB_HTTP_PATH (/sql/1.0/warehouses/...), DB_TOKEN (PAT with SQL access).
-#   Use a Unity Catalog–enabled SQL warehouse. Optional: DB_CATALOG / DB_SCHEMA (default poc_workspace / gold_plus_datamart for KPI tables).
-#   Optional session pin (only if needed): DB_INITIAL_CATALOG, DB_INITIAL_SCHEMA — omit if connect fails with unknown catalog.
-# - Set FM/Genie env vars as needed — never commit tokens.
+# - DB_TOKEN: PAT must NOT be committed. Store in workspace secret scope (e.g. key db_token), then
+#   attach it in Apps → Settings → Resources with resource key KPI_DB_TOKEN (must match valueFrom below).
+# - Admin RBAC: ADMIN_EMAILS + optional LOCAL_USER_EMAIL (fallback when X-Forwarded-Email is unset).
+# - Cold storage tuning: optional env vars (see main.py); omitted here = use code defaults. Do not copy
+#   absurd test values from local .env into production YAML.
 command:
   - bash
   - -c
@@ -14,28 +15,18 @@ command:
 python:
   requirements_file: backend/requirements.txt
 
-# SQL connection (your app reads DB_* from the process env).
-# IMPORTANT: The Apps "Environment" page is READ-ONLY — you do not edit variables there.
-# Add custom variables only via THIS file (`env:`) and/or workspace resources — see below.
-#
-# Recommended flow:
-# 1) Workspace: create (or reuse) a Databricks Secret Scope and store keys, e.g. db_token.
-# 2) Apps UI: Compute → Apps → workflow-automation → Edit (top right).
-# 3) In the wizard, go NEXT past "Configure Git" until you reach **Configure resources**.
-# 4) Click **+ Add resource** → Secret → pick the scope/key → assign a **resource key**
-#    (example: KPI_DB_TOKEN). Save the app.
-# 5) Uncomment the `env` block below so `valueFrom` matches that resource key exactly.
-#
-# Alternative (private repo only, not for public GitHub): put non-secret host/path/token in `env`
-# using `value:` — never commit a real PAT to a public repo.
-#
-# env:
-#   - name: DB_HOST
-#     value: "dbc-xxxx.cloud.databricks.com"
-#   - name: DB_HTTP_PATH
-#     value: "/sql/1.0/warehouses/xxxxxxxx"
-#   - name: DB_TOKEN
-#     valueFrom: KPI_DB_TOKEN
+# SQL + auth env for Databricks Apps (no PAT in Git — use Secret resource KPI_DB_TOKEN).
+env:
+  - name: DB_HOST
+    value: "dbc-0d446778-5d3c.cloud.databricks.com"
+  - name: DB_HTTP_PATH
+    value: "/sql/1.0/warehouses/7469fa770f441a86"
+  - name: DB_TOKEN
+    valueFrom: KPI_DB_TOKEN
+  - name: LOCAL_USER_EMAIL
+    value: "prajapathipankaj321@gmail.com"
+  - name: ADMIN_EMAILS
+    value: "prajapathipankaj321@gmail.com"
 
 resources:
   cpu: 1

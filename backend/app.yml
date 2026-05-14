@@ -1,4 +1,4 @@
-# See root app.yml — use Databricks Repos at repo root; set DB_* and other secrets in the app UI.
+# Databricks Apps should use repo ROOT ../app.yml. This duplicate is not used by default deployments.
 command:
   - bash
   - -c
