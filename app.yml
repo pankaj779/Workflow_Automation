@@ -4,8 +4,8 @@
 # - DB_TOKEN: add Secret under Apps → Resources. Use resource key shown there (often default `secret`).
 #   valueFrom below MUST equal that resource key exactly — NOT the scope secret key name (e.g. db_token).
 # - Admin RBAC: ADMIN_EMAILS + optional LOCAL_USER_EMAIL (fallback when X-Forwarded-Email is unset).
-# - Cold storage tuning: optional env vars (see main.py); omitted here = use code defaults. Do not copy
-#   absurd test values from local .env into production YAML.
+# - Cold storage tuning: optional env vars (see main.py). Values below (~1-minute windows) suit integration
+#   testing only — raise them before production workloads.
 command:
   - bash
   - -c
@@ -27,6 +27,18 @@ env:
     value: "pankajprajapathi9900@gmail.com"
   - name: ADMIN_EMAILS
     value: "prajapathipankaj321@gmail.com"
+
+  # Cold storage: ~1 minute between scheduler ticks and between phase thresholds (staging / QA only).
+  - name: COLD_STORAGE_LOOP_SECONDS
+    value: "60"
+  - name: COLD_STORAGE_INACTIVE_MINUTES
+    value: "1"
+  - name: COLD_STORAGE_DECISION_MINUTES
+    value: "1"
+  - name: COLD_STORAGE_REMINDER_MINUTES
+    value: "1"
+  - name: COLD_STORAGE_OWNER_RESPONSE_MINUTES
+    value: "1"
 
 resources:
   cpu: 1

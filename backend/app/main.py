@@ -164,6 +164,49 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _warehouse_id_from_http_path(http_path: Optional[str]) -> str:
+    """
+    Extract warehouse id from DB_HTTP_PATH. Handles /sql/1.0/warehouses/<id>, trailing slashes, and query strings.
+    Falls back to the last URL segment when the path does not contain /warehouses/.
+    """
+    if not http_path or not str(http_path).strip():
+        return ""
+    raw = str(http_path).strip().rstrip("/")
+    low = raw.lower()
+    key = "/warehouses/"
+    idx = low.rfind(key)
+    if idx >= 0:
+        tail = raw[idx + len(key) :].strip()
+        wid = tail.split("/")[0].split("?")[0].strip()
+        if wid:
+            return wid
+    seg = raw.split("/")[-1].split("?")[0].strip()
+    return seg
+
+
+def _try_list_tables_sql_from_prompt(prompt: str) -> Optional[str]:
+    """
+    If the user asks to list/show tables at catalog.schema scope, return runnable SQL without Genie.
+    Genie spaces require concrete table schemas; exploratory catalog questions should not hit Genie.
+    """
+    text = (prompt or "").strip()
+    if len(text) < 8:
+        return None
+    p = text.lower()
+    wants_inventory = ("table" in p or "tables" in p) and (
+        re.search(r"\b(list|show|display|enumerate|give\s+me)\b", p)
+        or re.search(r"\bwhat\s+(are|is)\b", p)
+        or re.search(r"\ball\s+(the\s+)?tables\b", p)
+    )
+    if not wants_inventory:
+        return None
+    m = re.search(r"\b([A-Za-z_][\w]*)\s*\.\s*([A-Za-z_][\w]*)\b", text)
+    if m:
+        cat, sch = m.group(1), m.group(2)
+        return f"SHOW TABLES IN `{cat}`.`{sch}`"
+    return f"SHOW TABLES IN `{DB_CATALOG}`.`{DB_SCHEMA}`"
+
+
 # Automatic cold-storage scheduler config (env-driven)
 COLD_STORAGE_AUTO_ENABLED = os.getenv("COLD_STORAGE_AUTO_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 COLD_STORAGE_LOOP_SECONDS = _env_int("COLD_STORAGE_LOOP_SECONDS", 60)
@@ -320,7 +363,8 @@ class OptimizeQueryRequest(BaseModel):
 
 class GenieQueryRequest(BaseModel):
     prompt: str
-    table: str  # Legacy: single table name (uses DB_CATALOG.DB_SCHEMA.table)
+    # Legacy: bare table under DB_CATALOG.DB_SCHEMA — omit when asking to list tables in a schema.
+    table: Optional[str] = None
     table_identifiers: Optional[List[str]] = None  # Full catalog.schema.table for single or multi-table
 
 class ExecuteQueryRequest(BaseModel):
@@ -1782,7 +1826,7 @@ def optimize_query(
 def _optimize_via_genie(sql: str, user_prompt: Optional[str]) -> Optional[dict]:
     """Fallback: use Genie to optimize SQL when FM is unavailable."""
     table_id = _extract_table_from_sql(sql) or f"{DB_CATALOG}.{DB_SCHEMA}.repatha_final_merged"
-    warehouse_id = (DATABRICKS_HTTP_PATH or "").split("/")[-1]
+    warehouse_id = _warehouse_id_from_http_path(DATABRICKS_HTTP_PATH)
     if not warehouse_id or not DATABRICKS_SERVER_HOSTNAME or not DATABRICKS_TOKEN:
         return None
     try:
@@ -1833,9 +1877,16 @@ def generate_sql_with_genie(req: GenieQueryRequest):
     Use table_identifiers for full catalog.schema.table (e.g. ["poc_workspace.gold_plus_datamart.t1", "poc_workspace.default.t2"]).
     """
     try:
+        # Listing / catalog exploration: no Genie space (also covers UI sending a stale placeholder table name).
+        use_ids = req.table_identifiers and len(req.table_identifiers) > 0
+        if not use_ids:
+            listing_sql = _try_list_tables_sql_from_prompt(req.prompt or "")
+            if listing_sql:
+                return {"sql": listing_sql, "space_id": None}
+
         tables_for_genie = []
-        if req.table_identifiers and len(req.table_identifiers) > 0:
-            for tid in req.table_identifiers:
+        if use_ids:
+            for tid in req.table_identifiers or []:
                 tid = (tid or "").strip()
                 if not tid:
                     continue
@@ -1847,13 +1898,19 @@ def generate_sql_with_genie(req: GenieQueryRequest):
             if not tables_for_genie:
                 raise ValueError("No valid tables provided in table_identifiers")
         else:
-            table_identifier = f"{DB_CATALOG}.{DB_SCHEMA}.{req.table}"
+            table_short = (req.table or "").strip()
+            if not table_short:
+                raise ValueError(
+                    "Genie needs a table to attach column metadata (select a base table above, then Generate), "
+                    'or phrase your prompt like: list tables in my_catalog.my_schema'
+                )
+            table_identifier = f"{DB_CATALOG}.{DB_SCHEMA}.{table_short}"
             col_meta = _get_table_column_metadata(table_identifier)
             if not col_meta:
                 raise ValueError(f"Table {table_identifier} has no columns or does not exist")
             tables_for_genie = [(table_identifier, col_meta)]
 
-        warehouse_id = (DATABRICKS_HTTP_PATH or "").split("/")[-1]
+        warehouse_id = _warehouse_id_from_http_path(DATABRICKS_HTTP_PATH)
         if not warehouse_id:
             raise ValueError("DB_HTTP_PATH not configured (missing warehouse ID)")
         if not DATABRICKS_SERVER_HOSTNAME or not DATABRICKS_TOKEN:
