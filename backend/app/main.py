@@ -184,6 +184,27 @@ def _warehouse_id_from_http_path(http_path: Optional[str]) -> str:
     return seg
 
 
+def _dot_segments(identifier: str) -> List[str]:
+    return [p for p in (identifier or "").strip().split(".") if p.strip()]
+
+
+def _qualified_uc_table_identifiers(raw: Optional[List[str]]) -> List[str]:
+    """
+    Genie DESCRIBE / column metadata requires catalog.schema.table (3 segments).
+    The UI sometimes sends catalog.schema when a schema-level source is picked — filter those out
+    so we can fall back to list-tables or single-table flows.
+    """
+    out = []
+    for t in raw or []:
+        s = (t or "").strip()
+        if not s:
+            continue
+        parts = _dot_segments(s)
+        if len(parts) >= 3:
+            out.append(s)
+    return out
+
+
 def _try_list_tables_sql_from_prompt(prompt: str) -> Optional[str]:
     """
     If the user asks to list/show tables at catalog.schema scope, return runnable SQL without Genie.
@@ -1878,7 +1899,8 @@ def generate_sql_with_genie(req: GenieQueryRequest):
     """
     try:
         # Listing / catalog exploration: no Genie space (also covers UI sending a stale placeholder table name).
-        use_ids = req.table_identifiers and len(req.table_identifiers) > 0
+        clean_ids = _qualified_uc_table_identifiers(req.table_identifiers)
+        use_ids = len(clean_ids) > 0
         if not use_ids:
             listing_sql = _try_list_tables_sql_from_prompt(req.prompt or "")
             if listing_sql:
@@ -1886,7 +1908,7 @@ def generate_sql_with_genie(req: GenieQueryRequest):
 
         tables_for_genie = []
         if use_ids:
-            for tid in req.table_identifiers or []:
+            for tid in clean_ids:
                 tid = (tid or "").strip()
                 if not tid:
                     continue

@@ -17,6 +17,21 @@ import { DefaultService } from "@/api-client";
 import { apiCall } from "@/lib/api-config";
 import { toast } from "sonner";
 
+/** UC table id for Genie metadata must be catalog.schema.table (3+ segments). Schema-only paths must not be sent. */
+function qualifiesAsGenieTableId(id: string): boolean {
+  return id.split(".").filter(Boolean).length >= 3;
+}
+
+function looksLikeListTablesPrompt(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  if (!p.includes("table") && !p.includes("tables")) return false;
+  return (
+    /\b(list|show|display|enumerate|give\s+me)\b/.test(p) ||
+    /\bwhat\s+(are|is)\b/.test(p) ||
+    /\ball\s+(the\s+)?tables\b/.test(p)
+  );
+}
+
  interface LogicStepProps {
    tableColumns: string[];
    initialSelectedColumns?: any;   // 👈 add this
@@ -389,29 +404,33 @@ import { toast } from "sonner";
     !!tableNameForGenie ||
     (selectedColumns?.length ?? 0) > 0 ||
     (typeof selectedTable === "string" && !!selectedTable?.includes(".")) ||
-    tableIdsFromPrompt.length > 0;
+    tableIdsFromPrompt.length > 0 ||
+    looksLikeListTablesPrompt(aiPrompt);
 
   const handleAIGenerate = async () => {
     if (!aiPrompt.trim()) return;
     if (!hasTableForGenie) {
-      toast.error("Genie requires a table. Select a data source in step 1, or mention table names in your prompt (e.g. poc_workspace.schema.table).");
+      toast.error(
+        "Select a base table in step 1 (full catalog.schema.table), use the query builder tables, \"list/show tables …\" in your prompt, or mention catalog.schema.table in the prompt."
+      );
       return;
     }
-    const tableIds =
+
+    const fromColumns =
       selectedColumns?.length > 0
-        ? selectedColumns.map((s) => s.tableId)
-        : typeof selectedTable === "string" && selectedTable.includes(".")
-        ? [selectedTable]
-        : tableIdsFromPrompt.length > 0
-        ? tableIdsFromPrompt
+        ? [...new Set(selectedColumns.map((s) => s.tableId).filter(qualifiesAsGenieTableId))]
         : [];
+    const fromSelected =
+      typeof selectedTable === "string" && qualifiesAsGenieTableId(selectedTable) ? [selectedTable] : [];
+    const tableIds =
+      fromColumns.length > 0 ? fromColumns : fromSelected.length > 0 ? fromSelected : tableIdsFromPrompt;
 
     try {
       setIsGenerating(true);
 
       const body: { prompt: string; table: string; table_identifiers?: string[] } = {
         prompt: aiPrompt,
-        table: tableNameForGenie || (tableIds[0] ? tableIds[0].split(".").pop() || "" : "") || "unknown",
+        table: tableNameForGenie || (tableIds[0] ? tableIds[0].split(".").pop() || "" : "") || "",
       };
       if (tableIds.length > 0) {
         body.table_identifiers = tableIds;
